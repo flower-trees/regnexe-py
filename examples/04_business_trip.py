@@ -2,11 +2,14 @@
 
 Scenario: 3-day Chengdu business trip assistant using all three capability types.
   get_weather       MCP_TOOL  -- direct tool call via @plugin / @agent_tool
-  contract_analyzer SKILL     -- SubAgent with private tools (mirrors Java Skill)
-  travel_planner    SUB_AGENT -- fully autonomous nested agent
+  contract_analyzer SKILL     -- skill agent sharing analyze_clause from parent marketplace
+  travel_planner    SUB_AGENT -- fully autonomous nested agent with private tools
 
-Invocation chain driven by the outer agent's reasoning:
-  get_weather -> contract_analyzer(analyze_clause x2) -> travel_planner(get_attractions, get_restaurants)
+with_skill_agent vs with_subagent:
+  contract_analyzer uses with_skill_agent: analyze_clause is registered in the parent
+    marketplace and referenced by str ID "analyze_clause" in the skill's tools list.
+  travel_planner uses with_subagent: get_attractions / get_restaurants are private
+    @tool objects invisible to the outer agent.
 
 Mirrors: BusinessTripAssistantTest in regnexe-agent (Java)
 """
@@ -35,7 +38,7 @@ class WeatherPlugin:
         return f"{city}: sunny, 20 degrees C."
 
 
-# ── 2. SKILL: contract_analyzer (SubAgent with private tool analyze_clause) ───
+# ── 2. SKILL: contract_analyzer (shared analyze_clause via str reference) ─────
 
 @tool
 def analyze_clause(clause: str) -> str:
@@ -70,11 +73,11 @@ CONTRACT_SKILL = {
         "3. Summarise all clause risks and provide overall recommendations\n"
         "Format: clause -> risk -> suggestion."
     ),
-    "tools": [analyze_clause],
+    "tools": ["analyze_clause"],   # str reference — resolved from parent marketplace at build time
 }
 
 
-# ── 3. SUB_AGENT: travel_planner (autonomous business-trip planner) ───────────
+# ── 3. SUB_AGENT: travel_planner (private tools, invisible to outer agent) ────
 
 @tool
 def get_attractions(theme: str) -> str:
@@ -123,7 +126,7 @@ TRAVEL_PLANNER = {
         "3. Output a 3-day schedule: morning / afternoon / evening per day\n"
         "Note: factor in the weather report the user provides when scheduling outdoor activities."
     ),
-    "tools": [get_attractions, get_restaurants],
+    "tools": [get_attractions, get_restaurants],   # private @tool objects
 }
 
 
@@ -133,9 +136,11 @@ async def main() -> None:
     agent = (
         RegnexeAgentBuilder()
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
-        # MCP_TOOL
+        # MCP_TOOL: direct tool from @plugin
         .with_plugin(WeatherPlugin())
-        # SKILL (SubAgent with private tools, mirrors Java Skill)
+        # Register analyze_clause in parent marketplace so skill agent can reference it by ID
+        .with_tool(analyze_clause)
+        # SKILL: sub-agent with focused system_prompt, shares analyze_clause via str ID
         .with_skill_agent(
             capability_id="legal.contract_analyzer",
             name="contract_analyzer",
@@ -143,7 +148,7 @@ async def main() -> None:
             sub_agent=CONTRACT_SKILL,
             tags=["legal", "contract"],
         )
-        # SUB_AGENT (fully autonomous nested agent)
+        # SUB_AGENT: fully autonomous nested agent with private tools
         .with_subagent(
             capability_id="travel.travel_planner",
             name="travel_planner",

@@ -100,11 +100,25 @@ class SimpleMarketplace:
         sub_agent: Any,
         tags: list[str] | None = None,
     ) -> None:
-        """Register a SKILL capability backed by a SubAgent (system_prompt + private tools).
+        """Register a SKILL capability backed by a SubAgent (system_prompt + shared tools).
 
-        Mirrors Java Skill: custom system_prompt + private tools, labelled CapabilityType.SKILL.
-        Different from install_skill() which registers a SKILL.md directory path.
+        Mirrors Java Skill: inherits parent model, tools must be str capability IDs already
+        registered in this marketplace (resolved to BaseTool at build time).
+        Use install_subagent() for private @tool objects invisible to the main agent.
         """
+        if "model" in sub_agent:
+            raise ValueError(
+                f"with_skill_agent '{capability_id}': model is not allowed; "
+                "skill agents inherit the parent model. Use with_subagent() to specify a custom model."
+            )
+        tools = sub_agent.get("tools", [])
+        for t in tools:
+            if not isinstance(t, str):
+                raise ValueError(
+                    f"with_skill_agent '{capability_id}': tools must be str capability IDs "
+                    f"registered in the marketplace, got {type(t).__name__!r}. "
+                    "Use with_subagent() for private @tool objects."
+                )
         self._capabilities[capability_id] = CapabilityDescriptor(
             capability_id=capability_id,
             plugin_id=capability_id.split(".")[0],
@@ -113,6 +127,19 @@ class SimpleMarketplace:
             description=description,
             tags=tags or [],
             sub_agent=sub_agent,
+        )
+
+    def install_tool(self, tool: Any, tags: list[str] | None = None) -> None:
+        """Register a pre-built LangChain BaseTool directly as a MCP_TOOL capability."""
+        capability_id = tool.name
+        self._capabilities[capability_id] = CapabilityDescriptor(
+            capability_id=capability_id,
+            plugin_id=capability_id,
+            type=CapabilityType.MCP_TOOL,
+            name=tool.name,
+            description=tool.description,
+            tags=tags or [],
+            tool=tool,
         )
 
     def install_from_file(self, directory: str) -> None:

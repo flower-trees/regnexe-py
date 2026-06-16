@@ -97,6 +97,12 @@ class RegnexeAgentBuilder:
         self._marketplace.install_skill_agent(capability_id, name, description, sub_agent, tags)
         return self
 
+    def with_tool(self, *tools: Any) -> Self:
+        """Register one or more pre-built LangChain tools directly as MCP_TOOL capabilities."""
+        for tool in tools:
+            self._marketplace.install_tool(tool)
+        return self
+
     def with_subagent(
         self,
         capability_id: str,

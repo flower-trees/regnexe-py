@@ -1,31 +1,40 @@
-"""ConsoleEventListener — prints agent events to stdout, aligned with Regnexe's ConsoleEventListener."""
-
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from regnexe.event.abstract_listener import AbstractEventListener
 
-class ConsoleEventListener:
+
+class ConsoleEventListener(AbstractEventListener):
     """Prints structured agent events to the console.
 
     Event types and their output format:
 
     - ``AGENT_STARTED``   → header banner
     - ``LLM_START``       → model call start + full message list sent to LLM
-    - ``LLM_END``         → model response with token usage + output preview
+    - ``LLM_END``         → model response (+ token usage if show_token_usage=True)
     - ``TOOL_CALLED``     → tool invocation with input
     - ``TOOL_RESULT``     → tool result (truncated at 200 chars)
     - ``AGENT_COMPLETED`` → footer banner with status
+
+    Args:
+        show_system_prompt: Print the full system message (can be very long).
+        show_llm_events:    Show LLM_START / LLM_END events (inherited filter).
+        show_token_usage:   Print the ``tokens=`` line inside LLM_END.
+        max_content_len:    Max chars shown per message content field.
     """
 
-    def __init__(self, show_system_prompt: bool = False, max_content_len: int = 300) -> None:
-        """
-        Args:
-            show_system_prompt: Whether to print the full system message (can be very long).
-            max_content_len: Max chars to show for each message's content.
-        """
+    def __init__(
+        self,
+        show_system_prompt: bool = False,
+        show_llm_events: bool = False,
+        show_token_usage: bool = False,
+        max_content_len: int = 300,
+    ) -> None:
+        super().__init__(show_llm_events=show_llm_events)
         self._show_system = show_system_prompt
+        self._show_token = show_token_usage
         self._max_len = max_content_len
 
     async def on_event(self, event_type: str, name: str, data: dict[str, Any]) -> None:
@@ -60,9 +69,12 @@ class ConsoleEventListener:
                             print(f"  [{role}→tool_call] {tc.get('name')}({args_str})")
 
             case "LLM_END":
-                usage = data.get("usage") or {}
                 text = data.get("text", "")
-                print(f"[LLM   ■] {name}  tokens={usage}")
+                if self._show_token:
+                    usage = data.get("usage") or {}
+                    print(f"[LLM   ■] {name}  tokens={usage}")
+                else:
+                    print(f"[LLM   ■] {name}")
                 if text:
                     print(f"          → {self._truncate(text)}")
 

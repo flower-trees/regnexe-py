@@ -1,15 +1,20 @@
-"""Example 02 — SKILL capability: SubAgent with private tools
+"""Example 02 — SKILL capability: with_skill_agent (shared tool, str reference)
 
 Scenario: legal risk analysis of contract clauses.
-Capability type: SKILL — a SubAgent with dedicated system_prompt and private tools.
+Capability type: SKILL — a sub-agent whose system_prompt focuses it on legal analysis,
+and whose tools are shared from the parent marketplace (referenced by str capability ID).
 
-The outer agent decides to delegate to contract_analyzer.
-contract_analyzer calls its private analyze_clause tool clause by clause,
-then returns a risk report to the outer agent.
+Key distinction:
+  with_skill_agent  tools must be str capability IDs already in the parent marketplace.
+                    The framework resolves them to BaseTool objects at build time.
+                    The skill inherits the parent model.
+  with_subagent     tools are private @tool objects; the parent agent cannot see them.
+                    Can optionally set its own model.
 
-Mirrors: ContractAnalyzerTest in regnexe-agent (Java)
-  SkillConfig.systemPrompt -> SubAgent["system_prompt"]
-  Skill.tools(analyzeClauseTool) -> SubAgent["tools"]
+Flow:
+  outer agent  ──delegates──►  contract_analyzer (SKILL)
+                                    ├─ calls analyze_clause (shared, resolved from marketplace)
+                                    └─ returns risk report
 """
 
 import asyncio
@@ -37,6 +42,8 @@ def analyze_clause(clause: str) -> str:
     return "Risk level: LOW\nIssue: No obvious legal risk detected.\nSuggestion: Keep current wording."
 
 
+# tools is a list of str capability IDs — resolved from the parent marketplace at build time.
+# "analyze_clause" matches the tool.name registered via with_tool(analyze_clause).
 CONTRACT_SKILL = {
     "name": "contract_analyzer",
     "description": (
@@ -52,7 +59,7 @@ CONTRACT_SKILL = {
         "3. Provide an overall risk assessment and revision recommendations\n"
         "Respond clearly and concisely."
     ),
-    "tools": [analyze_clause],
+    "tools": ["analyze_clause"],   # str reference — must be registered in parent marketplace
 }
 
 
@@ -60,6 +67,9 @@ async def main() -> None:
     agent = (
         RegnexeAgentBuilder()
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+        # Register analyze_clause in the parent marketplace first
+        .with_tool(analyze_clause)
+        # Skill agent references it by str ID; framework resolves at build time
         .with_skill_agent(
             capability_id="legal.contract_analyzer",
             name="contract_analyzer",

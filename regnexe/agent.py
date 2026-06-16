@@ -74,7 +74,7 @@ class RegnexeAgent:
         deep_agent = self._get_or_create_agent(effective_system)
 
         if self._listener:
-            await self._listener.on_event("AGENT_STARTED", "RegnexeAgent", {"goal": goal, "task_id": task_id})
+            await self._listener.dispatch("AGENT_STARTED", "RegnexeAgent", {"goal": goal, "task_id": task_id})
 
         final_text = ""
         status = "completed"
@@ -102,7 +102,7 @@ class RegnexeAgent:
         )
 
         if self._listener:
-            await self._listener.on_event("AGENT_COMPLETED", "RegnexeAgent", {"status": status})
+            await self._listener.dispatch("AGENT_COMPLETED", "RegnexeAgent", {"status": status})
 
         return AgentResult(
             status=status,
@@ -138,6 +138,7 @@ class RegnexeAgent:
         from deepagents import create_deep_agent
 
         descriptors = self._marketplace.search("")
+        descriptors = self._resolve_skill_agent_tools(descriptors)
         tools, skill_paths, subagents = self._marketplace.split_by_type(descriptors)
 
         kwargs: dict[str, Any] = dict(
@@ -154,6 +155,36 @@ class RegnexeAgent:
 
         return create_deep_agent(**{k: v for k, v in kwargs.items() if v is not None})
 
+    def _resolve_skill_agent_tools(
+        self, descriptors: list[Any]
+    ) -> list[Any]:
+        """For SKILL-type sub_agents, resolve string tool IDs to actual BaseTool objects."""
+        from regnexe.plugin.enums import CapabilityType
+        result = []
+        for desc in descriptors:
+            if (
+                desc.type == CapabilityType.SKILL
+                and desc.sub_agent is not None
+                and desc.skill_path is None
+            ):
+                tool_ids: list[str] = desc.sub_agent.get("tools", [])
+                if tool_ids and isinstance(tool_ids[0], str):
+                    resolved = []
+                    for tid in tool_ids:
+                        try:
+                            resolved.append(self._marketplace.resolve(tid).tool)
+                        except KeyError:
+                            raise ValueError(
+                                f"Skill agent tool ID {tid!r} not found in marketplace. "
+                                "Register it with with_plugin() or with_tool() first."
+                            )
+                    import dataclasses
+                    desc = dataclasses.replace(
+                        desc, sub_agent={**desc.sub_agent, "tools": resolved}
+                    )
+            result.append(desc)
+        return result
+
     async def _dispatch(self, event: dict[str, Any]) -> None:
         if not self._listener:
             return
@@ -167,7 +198,7 @@ class RegnexeAgent:
                 raw = data.get("input", {}).get("messages", [])
                 batch = raw[0] if raw else []
                 messages = [_serialize_message(m) for m in batch]
-                await self._listener.on_event("LLM_START", name, {"messages": messages})
+                await self._listener.dispatch("LLM_START", name, {"messages": messages})
 
             case "on_chat_model_end":
                 output = data.get("output")
@@ -176,13 +207,13 @@ class RegnexeAgent:
                 if output is not None:
                     content = getattr(output, "content", "")
                     text = content if isinstance(content, str) else str(content)
-                await self._listener.on_event("LLM_END", name, {"usage": usage, "text": text})
+                await self._listener.dispatch("LLM_END", name, {"usage": usage, "text": text})
 
             case "on_tool_start":
-                await self._listener.on_event("TOOL_CALLED", name, {"input": data.get("input", {})})
+                await self._listener.dispatch("TOOL_CALLED", name, {"input": data.get("input", {})})
 
             case "on_tool_end":
-                await self._listener.on_event("TOOL_RESULT", name, {"output": data.get("output", "")})
+                await self._listener.dispatch("TOOL_RESULT", name, {"output": data.get("output", "")})
 
     @staticmethod
     def _extract_final_text(state: Any) -> str:

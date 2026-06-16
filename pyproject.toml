@@ -2,6 +2,17 @@
 name = "regnexe-py"
 version = "0.1.0"
 description = "Python agent framework built on deepagents, aligned with regnexe-agent"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "huaqianshu_z", email = "chuanzhi.z@gmail.com" },
+]
+keywords = ["agent", "deepagents", "langgraph", "langchain"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.6.8",
