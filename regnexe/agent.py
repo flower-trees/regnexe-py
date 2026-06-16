@@ -1,0 +1,214 @@
+"""RegnexeAgent — main agent orchestrator built on deepagents."""
+
+from __future__ import annotations
+
+import uuid
+from typing import TYPE_CHECKING, Any
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
+
+from regnexe.event.listener import AgentEventListener
+from regnexe.market.simple_marketplace import SimpleMarketplace
+from regnexe.result import AgentResult
+from regnexe.session.session_key import SessionKey
+from regnexe.session.task_store import TaskResultStore
+
+if TYPE_CHECKING:
+    pass
+
+
+class RegnexeAgent:
+    """Agent orchestrator that wraps deepagents' create_deep_agent.
+
+    Call :meth:`ainvoke` (async) or :meth:`invoke` (sync wrapper) to run a task.
+    The underlying deepagents graph is created lazily on the first invocation and
+    cached for subsequent calls (since v1 marketplace search always returns all
+    capabilities).
+    """
+
+    def __init__(
+        self,
+        model: BaseChatModel,
+        marketplace: SimpleMarketplace,
+        checkpointer: Any,
+        store: Any | None,
+        task_store: TaskResultStore,
+        listener: AgentEventListener | None,
+        interrupt_on: dict[str, Any] | None,
+        system_prompt: str | None,
+        session_buffer_size: int,
+    ) -> None:
+        self._model = model
+        self._marketplace = marketplace
+        self._checkpointer = checkpointer
+        self._store = store
+        self._task_store = task_store
+        self._listener = listener
+        self._interrupt_on = interrupt_on
+        self._system_prompt = system_prompt
+        self._session_buffer_size = session_buffer_size
+        self._session_key = SessionKey()
+        self._deep_agent: Any = None   # lazy-compiled deepagents graph
+
+    # ------------------------------------------------------------------ public
+
+    async def ainvoke(
+        self,
+        goal: str,
+        app_id: str = "default",
+        user_id: str = "default",
+        session_id: str = "default",
+    ) -> AgentResult:
+        task_id = str(uuid.uuid4())
+        thread_id = self._session_key.to_thread_id(app_id, user_id, session_id)
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Layer 3: inject recent cross-session task history into system prompt
+        recent = await self._task_store.load_recent(app_id, user_id)
+        history_ctx = TaskResultStore.format_for_prompt(recent)
+
+        system_parts = [p for p in [self._system_prompt, history_ctx] if p]
+        effective_system = "\n\n".join(system_parts) if system_parts else None
+
+        deep_agent = self._get_or_create_agent(effective_system)
+
+        if self._listener:
+            await self._listener.on_event("AGENT_STARTED", "RegnexeAgent", {"goal": goal, "task_id": task_id})
+
+        final_text = ""
+        status = "completed"
+
+        try:
+            async for event in deep_agent.astream_events(
+                {"messages": [HumanMessage(content=goal)]},
+                config=config,
+                version="v2",
+            ):
+                await self._dispatch(event)
+
+            state = await deep_agent.aget_state(config)
+            final_text = self._extract_final_text(state)
+
+        except Exception as exc:
+            status = "error"
+            final_text = str(exc)
+
+        # Layer 3: persist task result
+        await self._task_store.save(
+            app_id, user_id, task_id, goal,
+            summary=final_text[:500],
+            status=status,
+        )
+
+        if self._listener:
+            await self._listener.on_event("AGENT_COMPLETED", "RegnexeAgent", {"status": status})
+
+        return AgentResult(
+            status=status,
+            final_text=final_text,
+            task_id=task_id,
+            thread_id=thread_id,
+        )
+
+    def invoke(
+        self,
+        goal: str,
+        app_id: str = "default",
+        user_id: str = "default",
+        session_id: str = "default",
+    ) -> AgentResult:
+        """Synchronous wrapper around :meth:`ainvoke`."""
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(
+            self.ainvoke(goal, app_id=app_id, user_id=user_id, session_id=session_id)
+        )
+
+    # ------------------------------------------------------------------ internals
+
+    def _get_or_create_agent(self, system_prompt: str | None) -> Any:
+        """Build the deepagents graph on first call; reuse on subsequent calls."""
+        cache_key = system_prompt or ""
+        if self._deep_agent is None or getattr(self._deep_agent, "_regnexe_sp_key", None) != cache_key:
+            self._deep_agent = self._build_deep_agent(system_prompt)
+            self._deep_agent._regnexe_sp_key = cache_key  # type: ignore[attr-defined]
+        return self._deep_agent
+
+    def _build_deep_agent(self, system_prompt: str | None) -> Any:
+        from deepagents import create_deep_agent
+
+        descriptors = self._marketplace.search("")
+        tools, skill_paths, subagents = self._marketplace.split_by_type(descriptors)
+
+        kwargs: dict[str, Any] = dict(
+            model=self._model,
+            tools=tools or None,
+            skills=skill_paths or None,
+            subagents=subagents or None,
+            system_prompt=system_prompt,
+            checkpointer=self._checkpointer,
+            store=self._store,
+        )
+        if self._interrupt_on:
+            kwargs["interrupt_on"] = self._interrupt_on
+
+        return create_deep_agent(**{k: v for k, v in kwargs.items() if v is not None})
+
+    async def _dispatch(self, event: dict[str, Any]) -> None:
+        if not self._listener:
+            return
+        kind = event.get("event", "")
+        name = event.get("name", "")
+        data = event.get("data", {})
+
+        match kind:
+            case "on_chat_model_start":
+                # data["input"]["messages"] is a list of batches; take the first batch
+                raw = data.get("input", {}).get("messages", [])
+                batch = raw[0] if raw else []
+                messages = [_serialize_message(m) for m in batch]
+                await self._listener.on_event("LLM_START", name, {"messages": messages})
+
+            case "on_chat_model_end":
+                output = data.get("output")
+                usage = getattr(output, "usage_metadata", None) or {}
+                text = ""
+                if output is not None:
+                    content = getattr(output, "content", "")
+                    text = content if isinstance(content, str) else str(content)
+                await self._listener.on_event("LLM_END", name, {"usage": usage, "text": text})
+
+            case "on_tool_start":
+                await self._listener.on_event("TOOL_CALLED", name, {"input": data.get("input", {})})
+
+            case "on_tool_end":
+                await self._listener.on_event("TOOL_RESULT", name, {"output": data.get("output", "")})
+
+    @staticmethod
+    def _extract_final_text(state: Any) -> str:
+        messages = getattr(state, "values", {}).get("messages", [])
+        for msg in reversed(messages):
+            content = getattr(msg, "content", "")
+            if content and not getattr(msg, "tool_calls", None) and type(msg).__name__ == "AIMessage":
+                return content if isinstance(content, str) else str(content)
+        return ""
+
+
+def _serialize_message(msg: Any) -> dict[str, Any]:
+    """Convert a LangChain message object to a plain dict for logging."""
+    msg_type = type(msg).__name__.replace("Message", "").lower()  # SystemMessage→system
+    content = getattr(msg, "content", "")
+    result: dict[str, Any] = {
+        "role": msg_type,
+        "content": content if isinstance(content, str) else str(content),
+    }
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+        result["tool_calls"] = [
+            {"name": tc.get("name", ""), "args": tc.get("args", {})}
+            for tc in tool_calls
+        ]
+    tool_call_id = getattr(msg, "tool_call_id", None)
+    if tool_call_id:
+        result["tool_call_id"] = tool_call_id
+    return result
