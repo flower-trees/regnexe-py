@@ -5,10 +5,11 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/regnexe-py/"><img src="https://img.shields.io/pypi/v/regnexe-py?label=PyPI" alt="PyPI"/></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-blue" alt="Python 3.11+"/>
   <img src="https://img.shields.io/badge/deepagents-0.6.8%2B-purple" alt="deepagents 0.6.8+"/>
   <img src="https://img.shields.io/badge/LangGraph-0.5%2B-green" alt="LangGraph 0.5+"/>
-  <img src="https://img.shields.io/badge/license-not%20specified-lightgrey" alt="License not specified"/>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License"/></a>
 </p>
 
 ---
@@ -70,6 +71,8 @@ Plugin Marketplace
 ## 快速开始
 
 ### 1. 安装
+
+从 PyPI 安装已发布的包：
 
 ```bash
 pip install regnexe-py
@@ -446,4 +449,4 @@ python examples/01_weather_example.py
 
 如果 regnexe-py 对你有帮助，欢迎给 GitHub 项目点个 Star。
 
-[English README](README.md)
+[English README](README.md) · [PyPI](https://pypi.org/project/regnexe-py/) · [License](LICENSE)

@@ -5,10 +5,11 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/regnexe-py/"><img src="https://img.shields.io/pypi/v/regnexe-py?label=PyPI" alt="PyPI"/></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-blue" alt="Python 3.11+"/>
   <img src="https://img.shields.io/badge/deepagents-0.6.8%2B-purple" alt="deepagents 0.6.8+"/>
   <img src="https://img.shields.io/badge/LangGraph-0.5%2B-green" alt="LangGraph 0.5+"/>
-  <img src="https://img.shields.io/badge/license-not%20specified-lightgrey" alt="License not specified"/>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License"/></a>
 </p>
 
 ---
@@ -77,6 +78,8 @@ Plugin Marketplace
 ## Quick Start
 
 ### 1. Install
+
+Install the published package from PyPI:
 
 ```bash
 pip install regnexe-py
@@ -459,4 +462,4 @@ More details: [examples/README.md](examples/README.md)
 
 If regnexe-py saves you time, a star on GitHub goes a long way.
 
-[中文文档](README_zh.md)
+[中文文档](README_zh.md) · [PyPI](https://pypi.org/project/regnexe-py/) · [License](LICENSE)
