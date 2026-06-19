@@ -89,11 +89,6 @@ async def main() -> None:
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
         .with_subagent(
             capability_id="travel.travel_planner",
-            name="travel_planner",
-            description=(
-                "Chengdu travel itinerary expert. Plans a complete day-by-day schedule "
-                "including attractions and restaurants."
-            ),
             sub_agent=TRAVEL_PLANNER,
             tags=["travel", "planning", "chengdu"],
         )

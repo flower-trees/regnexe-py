@@ -69,14 +69,10 @@ async def main() -> None:
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
         # Register analyze_clause in the parent marketplace first
         .with_tool(analyze_clause)
-        # Skill agent references it by str ID; framework resolves at build time
+        # Skill agent references it by str ID; framework resolves at build time.
+        # name/description come from CONTRACT_SKILL dict automatically.
         .with_skill_agent(
             capability_id="legal.contract_analyzer",
-            name="contract_analyzer",
-            description=(
-                "Professional legal risk analysis for contract clauses. "
-                "Input clause text, output risk level and improvement suggestions."
-            ),
             sub_agent=CONTRACT_SKILL,
             tags=["legal", "contract", "risk"],
         )

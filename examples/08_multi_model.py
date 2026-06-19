@@ -58,8 +58,6 @@ async def _run_contract_analysis(clauses: str) -> str:
         .with_model(inner_model)
         .with_skill_agent(
             capability_id="legal.contract_analyzer",
-            name="contract_analyzer",
-            description="Legal risk analysis for contract clauses.",
             sub_agent=_CONTRACT_SKILL,
         )
         .build()

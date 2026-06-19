@@ -84,17 +84,18 @@ class RegnexeAgentBuilder:
     def with_skill_agent(
         self,
         capability_id: str,
-        name: str,
-        description: str,
         sub_agent: Any,
         tags: list[str] | None = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> Self:
-        """Register a SKILL capability: SubAgent with focused system_prompt and private tools.
+        """Register a SKILL capability: SubAgent sharing tools from the parent marketplace.
 
-        Use this when the capability has its own system_prompt and private tools
-        (mirrors Java's Skill). Use with_skill() for pure SKILL.md knowledge skills.
+        name/description default to sub_agent["name"] / sub_agent["description"].
+        tools in sub_agent must be str capability IDs already registered in the marketplace.
+        Use with_subagent() for private @tool objects invisible to the main agent.
         """
-        self._marketplace.install_skill_agent(capability_id, name, description, sub_agent, tags)
+        self._marketplace.install_skill_agent(capability_id, sub_agent, tags, name, description)
         return self
 
     def with_tool(self, *tools: Any) -> Self:
@@ -106,13 +107,17 @@ class RegnexeAgentBuilder:
     def with_subagent(
         self,
         capability_id: str,
-        name: str,
-        description: str,
         sub_agent: Any,
         tags: list[str] | None = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> Self:
-        """Register a SUB_AGENT capability (deepagents SubAgent TypedDict)."""
-        self._marketplace.install_subagent(capability_id, name, description, sub_agent, tags)
+        """Register a SUB_AGENT capability (deepagents SubAgent TypedDict).
+
+        name/description default to sub_agent["name"] / sub_agent["description"].
+        tools can be private @tool objects invisible to the outer agent.
+        """
+        self._marketplace.install_subagent(capability_id, sub_agent, tags, name, description)
         return self
 
     # ------------------------------------------------------------------ session / persistence

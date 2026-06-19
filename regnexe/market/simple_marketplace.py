@@ -76,18 +76,18 @@ class SimpleMarketplace:
     def install_subagent(
         self,
         capability_id: str,
-        name: str,
-        description: str,
         sub_agent: Any,
         tags: list[str] | None = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> None:
         """Register a SUB_AGENT capability (deepagents SubAgent TypedDict)."""
         self._capabilities[capability_id] = CapabilityDescriptor(
             capability_id=capability_id,
             plugin_id=capability_id.split(".")[0],
             type=CapabilityType.SUB_AGENT,
-            name=name,
-            description=description,
+            name=name or sub_agent.get("name", capability_id),
+            description=description or sub_agent.get("description", ""),
             tags=tags or [],
             sub_agent=sub_agent,
         )
@@ -95,10 +95,10 @@ class SimpleMarketplace:
     def install_skill_agent(
         self,
         capability_id: str,
-        name: str,
-        description: str,
         sub_agent: Any,
         tags: list[str] | None = None,
+        name: str | None = None,
+        description: str | None = None,
     ) -> None:
         """Register a SKILL capability backed by a SubAgent (system_prompt + shared tools).
 
@@ -123,8 +123,8 @@ class SimpleMarketplace:
             capability_id=capability_id,
             plugin_id=capability_id.split(".")[0],
             type=CapabilityType.SKILL,
-            name=name,
-            description=description,
+            name=name or sub_agent.get("name", capability_id),
+            description=description or sub_agent.get("description", ""),
             tags=tags or [],
             sub_agent=sub_agent,
         )

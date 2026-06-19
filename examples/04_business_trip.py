@@ -140,19 +140,17 @@ async def main() -> None:
         .with_plugin(WeatherPlugin())
         # Register analyze_clause in parent marketplace so skill agent can reference it by ID
         .with_tool(analyze_clause)
-        # SKILL: sub-agent with focused system_prompt, shares analyze_clause via str ID
+        # SKILL: sub-agent with focused system_prompt, shares analyze_clause via str ID.
+        # name/description come from CONTRACT_SKILL dict automatically.
         .with_skill_agent(
             capability_id="legal.contract_analyzer",
-            name="contract_analyzer",
-            description="Legal risk analysis for business-trip reimbursement clauses.",
             sub_agent=CONTRACT_SKILL,
             tags=["legal", "contract"],
         )
-        # SUB_AGENT: fully autonomous nested agent with private tools
+        # SUB_AGENT: fully autonomous nested agent with private tools.
+        # name/description come from TRAVEL_PLANNER dict automatically.
         .with_subagent(
             capability_id="travel.travel_planner",
-            name="travel_planner",
-            description="Chengdu business trip planner combining objectives and weather.",
             sub_agent=TRAVEL_PLANNER,
             tags=["travel", "planning"],
         )
