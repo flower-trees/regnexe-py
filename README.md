@@ -18,7 +18,7 @@ Most agent code starts by passing `tools`, `skills`, and `subagents` directly in
 deepagents. That works well for prototypes. regnexe-py keeps deepagents as the runtime
 engine, then adds the missing application layer around it: a capability marketplace,
 plugin decorators, explicit app/user/session identity, cross-session task memory,
-structured events, model vendor routing, and Regnexe-compatible concepts.
+structured events, model vendor routing, and user-triggered cancellation.
 
 ```
 User Goal
@@ -33,10 +33,10 @@ deepagents graph  ->  LangGraph checkpointer / store
 Plugin Marketplace
     +------------------------------------------------+
     | Loading channels:                              |
-    |  @plugin Python object                         |
-    |  SKILL.md directory                            |
-    |  plugin.yaml / plugin.yml                      |
-    |  builder capability methods                    |
+    |  @plugin Python object  ·  PluginDescriptor     |
+    |  SKILL.md / plugin.yaml directory               |
+    |  builder capability methods (with_tool/skill/   |
+    |  subagent)                                      |
     |                         |                      |
     |                         v                      |
     |              CapabilityDescriptor              |
@@ -48,38 +48,28 @@ Plugin Marketplace
 
 **What sets it apart from using deepagents directly:**
 
-- **Application structure, not just graph construction**: keep business tools, skills,
+- **Application structure, not just graph construction** — business tools, skills,
   sub-agents, memory, events, and model selection behind one builder API.
-- **Plugin marketplace**: register capabilities once, then let the framework map them to
-  deepagents `tools`, `skills`, and `subagents`.
-- **Business-friendly tool authoring**: expose ordinary Python classes with `@plugin` and
-  `@agent_tool`; no repetitive `StructuredTool` wiring.
-- **Explicit identity and memory**: every run carries `app_id`, `user_id`, and `session_id`;
-  recent task summaries can be injected into later sessions.
-- **Observable execution**: event listeners receive LLM calls, tool calls, tool results,
-  token metadata, and agent lifecycle events.
-- **Regnexe ecosystem alignment**: Python projects can use the same Plugin / Skill /
-  SubAgent language as the Java `regnexe-agent` project.
+- **Plugin marketplace** — register capabilities once; swap the backing store
+  (in-memory, database, ...) without touching agent code.
+- **Business-friendly tool authoring** — expose ordinary Python classes with `@plugin`
+  and `@agent_tool`; no repetitive `StructuredTool` wiring.
+- **Explicit identity and memory** — every run carries `app_id`, `user_id`, and
+  `session_id`; recent task summaries can be injected into later sessions.
+- **User-triggered cancellation** — stop an in-flight run from a concurrent task at
+  any point, then continue from the last completed step.
+- **Observable execution** — event listeners receive LLM calls, tool calls, tool
+  results, token metadata, and agent lifecycle events.
+
+This README goes from "one tool call" to the full framework, one layer at a time.
+Every code block below is adapted from a real, runnable script under
+[`examples/readme/`](examples/readme).
 
 ---
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [Why Not Just deepagents?](#why-not-just-deepagents)
-- [Core Model](#core-model)
-- [Capability Loading](#capability-loading)
-- [Memory](#memory)
-- [Events and Streaming](#events-and-streaming)
-- [Human Approval](#human-approval)
-- [Examples](#examples)
-- [Reference](#reference)
 
 ## Quick Start
 
 ### 1. Install
-
-Install the published package from PyPI:
 
 ```bash
 pip install regnexe-py
@@ -101,48 +91,61 @@ export OPENAI_API_KEY=sk-...
 
 Ollama uses the local Ollama runtime and does not require an API key.
 
-### 3. Write a plugin and run
+### 3. Register tools and run
+
+`with_tool(...)` registers pre-built LangChain tools directly — no class, no
+decorator, the fastest path to a running agent. See
+[`examples/readme/01_multi_tool.py`](examples/readme/01_multi_tool.py).
 
 ```python
 import asyncio
-
-from regnexe import (
-    ConsoleEventListener,
-    RegnexeAgentBuilder,
-    Vendor,
-    agent_tool,
-    plugin,
-)
+from langchain_core.tools import tool
+from regnexe import ConsoleEventListener, RegnexeAgentBuilder, Vendor
 
 
-@plugin(id="weather", name="Weather Plugin", description="Weather queries")
-class WeatherPlugin:
-    @agent_tool("Get today's weather for a city, including activity advice.")
-    def get_weather(self, city: str) -> str:
-        return "Beijing: sunny, 22 C, excellent air quality. Great day for running."
+@tool
+def get_weather(city: str) -> str:
+    """Get today's weather for a city."""
+    return "Beijing: sunny, 22 C."
+
+
+@tool
+def get_air_quality(city: str) -> str:
+    """Get today's air quality index (AQI) for a city."""
+    return "Beijing: AQI 35, excellent air quality."
 
 
 async def main() -> None:
     agent = (
         RegnexeAgentBuilder()
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
-        .with_plugin(WeatherPlugin())               # one line to load a plugin
+        .with_tool(get_weather, get_air_quality)         # as many as you need, one call
         .with_event_listener(ConsoleEventListener())
         .build()
     )
 
     result = await agent.ainvoke(
-        "Check today's Beijing weather. Is it good for running?",
-        app_id="demo",
-        user_id="user1",
-        session_id="morning-run",
+        "Check today's weather and air quality in Beijing, then tell me if it's good for outdoor running.",
+        app_id="demo", user_id="user1", session_id="morning-run",
     )
 
-    print(result.status)
+    print(result.status)        # completed
     print(result.final_text)
 
 
 asyncio.run(main())
+```
+
+`ConsoleEventListener` prints every tool call and result as the loop runs:
+
+```
+[AGENT ▶] RegnexeAgent
+          goal: Check today's weather and air quality in Beijing...
+[TOOL  ▶] get_weather  input={"city": "Beijing"}
+[TOOL  ■] get_weather  output=Beijing: sunny, 22 C.
+[TOOL  ▶] get_air_quality  input={"city": "Beijing"}
+[TOOL  ■] get_air_quality  output=Beijing: AQI 35, excellent air quality.
+[AGENT ■] status=completed
 ```
 
 ## Why Not Just deepagents?
@@ -152,256 +155,479 @@ that engine.
 
 | Need | Direct deepagents | regnexe-py |
 |------|-------------------|------------|
-| Register business tools | Manually create and pass tools | Decorate normal Python classes with `@plugin` and `@agent_tool` |
+| Register business tools | Manually create and pass tools | `with_tool(...)`, or `@plugin`/`@agent_tool` on a class |
 | Mix tools, skills, sub-agents | Maintain separate lists yourself | Register all capabilities through one builder and marketplace |
-| Load file-based skills | Pass skill paths manually | Use `.with_skill()` or `.with_directory()` to scan `SKILL.md` files |
+| Bundle mixed capabilities under one id | Build each spec separately | A `PluginDescriptor` of `CapabilityDescriptor`s, one `plugin_id` |
 | Preserve user/session identity | Design your own thread naming scheme | Use explicit `app_id`, `user_id`, and `session_id` |
-| Reuse prior task outcomes | Build storage and prompt injection yourself | Use `TaskResultStore` for recent cross-session task summaries |
+| Reuse prior task outcomes | Build storage and prompt injection yourself | `TaskResultStore` injects recent cross-session task summaries |
 | Observe execution | Consume graph events directly | Attach `AgentEventListener` for structured LLM/tool/agent events |
+| Stop a run mid-flight | Hold and cancel the asyncio Task yourself | `agent.acancel(...)` looks it up by session and cancels it |
 | Support many model vendors | Instantiate each LangChain model yourself | Use `Vendor` or `with_model_spec("vendor:model")` |
-| Align Python and Java agents | Define your own concepts | Reuse Regnexe-style Plugin, Skill, SubAgent, and descriptors |
 
-Use deepagents directly for small experiments. Use regnexe-py when the agent is becoming
-an application: multiple business plugins, reusable skills, user sessions, streaming UI,
-audit logs, provider switching, or a Python/Java Regnexe stack.
+Use deepagents directly for small experiments. Use regnexe-py when the agent is
+becoming an application: multiple business plugins, reusable skills, user sessions,
+streaming UI, audit logs, or provider switching.
 
-## Core Model
-
-regnexe-py has three runtime layers:
-
-| Layer | Role |
-|-------|------|
-| `RegnexeAgent` | Wraps a lazily created deepagents graph and executes goals |
-| `SimpleMarketplace` | Stores capability descriptors and splits them for deepagents |
-| `CapabilityDescriptor` | Unified abstraction for Tool, Skill, and Sub-Agent |
-
-### Capability types
-
-| Type | What it is | When to use |
-|------|------------|-------------|
-| `MCP_TOOL` | A single callable Python tool | Lookups, calculations, API calls, business actions |
-| `SKILL` | A `SKILL.md` directory or a focused sub-agent with private tools | Domain instructions, contract analysis, translation, report tasks |
-| `SUB_AGENT` | An autonomous deepagents sub-agent | Complex independent sub-tasks such as travel planning or research |
-
-The current marketplace is intentionally simple: v1 returns all registered capabilities.
-That keeps behavior transparent today and leaves room for retrieval, ranking, permissions,
-and embedding-based capability selection later.
-
-## Capability Loading
-
-All capabilities enter through the marketplace. The builder exposes focused shortcuts for
-the capability types currently supported by the Python implementation.
-
-### Method 1: Python object plugin
-
-Best for business services, quick prototypes, and local tools.
-
-```python
-@plugin(id="weather", name="Weather Plugin")
-class WeatherPlugin:
-    @agent_tool("Get today's weather for a city.")
-    def get_weather(self, city: str) -> str:
-        return f"{city}: sunny, 22 C"
-
-
-agent = (
-    RegnexeAgentBuilder()
-    .with_model_spec("deepseek:deepseek-v4-flash")
-    .with_plugin(WeatherPlugin())
-    .build()
-)
-```
-
-### Method 2: File-system directory
-
-Best for ops-managed or repository-managed skills.
-
-```
-examples/skills/
-  translation/
-    SKILL.md
-```
-
-```python
-agent = (
-    RegnexeAgentBuilder()
-    .with_model_spec("deepseek:deepseek-v4-flash")
-    .with_directory("examples/skills")
-    .build()
-)
-```
-
-`with_directory()` scans for `SKILL.md`, `plugin.yaml`, and `plugin.yml`.
-
-<details>
-<summary>SKILL.md format</summary>
-
-```markdown
 ---
-name: translator
-plugin_id: translation
-capability_id: translation.skill
-description: "Translate text while preserving tone and domain terminology."
-tags: [translation]
----
-You are a professional translator. Preserve meaning, tone, and formatting.
-```
 
-</details>
+## 1. Going deeper: Skill vs Sub-Agent
 
-### Method 3: Skill agent with private tools
+A single tool call only goes so far. Two richer capability types compose multi-step
+behavior, and they make opposite tradeoffs on purpose. See
+[`examples/readme/02_skill_vs_subagent.py`](examples/readme/02_skill_vs_subagent.py).
 
-Best when a domain capability needs its own prompt and private tools.
+### Skill (`with_skill`) — shares the parent's model and tools
+
+A Skill's `sub_agent` dict has no `model` key at all — `install_skill_agent()` raises
+if you try to pass one. A Skill **always inherits the parent agent's model**, and its
+`tools` must be `str` capability ids already registered in the marketplace — it
+borrows, it doesn't own. Use a Skill for a focused, repeatable sub-workflow that should
+stay cheap and stay in lockstep with the main agent's model.
 
 ```python
 from langchain_core.tools import tool
 
 
 @tool
-def analyze_clause(clause: str) -> str:
-    """Assess legal risk for one contract clause."""
-    return "Risk level: MEDIUM. Add a clearer exception process."
+def get_weather(city: str) -> str:
+    """Get today's weather for a city."""
+    return "Beijing: sunny, 22 C, excellent air quality."
 
 
-CONTRACT_SKILL = {
-    "name": "contract_analyzer",
-    "description": "Legal risk analysis. TRIGGER: use when analyzing contracts.",
-    "system_prompt": "You are a contract risk analyst. Call tools, then summarize risks.",
-    "tools": [analyze_clause],
+travel_advisor = {
+    "name": "travel_advisor",
+    "description": (
+        "Calls get_weather for the city the user mentions and gives outdoor-activity "
+        "advice based on the current weather. TRIGGER: Use when the user asks whether "
+        "the weather is suitable for an outdoor activity."
+    ),
+    "system_prompt": (
+        "You are an outdoor-activity advisor.\n"
+        "1. Call get_weather for the city the user mentions.\n"
+        "2. Based on the result, give a short, direct go/no-go recommendation."
+    ),
+    "tools": ["get_weather"],   # borrowed by capability id, not owned
 }
 
 agent = (
     RegnexeAgentBuilder()
-    .with_model_spec("deepseek:deepseek-v4-flash")
-    .with_skill_agent(
-        "legal.contract_analyzer",
-        "contract_analyzer",
-        "Legal risk analysis for contract clauses.",
-        CONTRACT_SKILL,
-    )
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_tool(get_weather)                        # the Skill borrows this; must exist first
+    .with_skill("travel.travel_advisor", travel_advisor)
     .build()
 )
 ```
 
-### Method 4: Sub-agent
+### Sub-Agent (`with_subagent`) — owns its own model and private tools
 
-Best for complex independent sub-tasks.
+A Sub-Agent's `sub_agent["model"]` can be a *different* `BaseChatModel` than the
+parent's (or omitted to inherit it), and its `tools` can be private `BaseTool` objects
+that are **never** registered in the marketplace, so the outer agent can never call
+them directly. Use a Sub-Agent for an independent sub-task that needs its own
+reasoning loop, its own tools, or a cheaper/faster model.
 
 ```python
-TRAVEL_PLANNER = {
-    "name": "travel_planner",
-    "description": "Business trip planner. TRIGGER: use when planning travel.",
-    "system_prompt": "Plan efficient business trips with meetings, meals, and travel gaps.",
-    "tools": [],
+from regnexe.llm.model_provider import ModelProvider
+
+
+@tool
+def estimate_trip_cost(days: int, city: str) -> str:
+    """Estimate total cost for a multi-day business trip."""
+    return f"{days}-day {city} trip estimate: 3600 CNY total."
+
+
+expense_estimator = {
+    "name": "expense_estimator",
+    "description": (
+        "Estimates the total cost of a business trip. "
+        "TRIGGER: Use when the user asks for a trip budget or cost estimate."
+    ),
+    "model": ModelProvider().resolve(Vendor.ALIYUN, "qwen-plus"),   # own model
+    "system_prompt": (
+        "You are a travel expense estimator.\n"
+        "1. Call estimate_trip_cost with the trip length and destination.\n"
+        "2. Report the total and a one-line breakdown."
+    ),
+    "tools": [estimate_trip_cost],   # private — invisible to the outer agent
 }
 
 agent = (
     RegnexeAgentBuilder()
-    .with_model_spec("deepseek:deepseek-v4-flash")
-    .with_subagent(
-        "travel.travel_planner",
-        "travel_planner",
-        "Business trip planner.",
-        TRAVEL_PLANNER,
-    )
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_subagent("travel.expense_estimator", expense_estimator)
     .build()
 )
 ```
 
-## Memory
+### Which one?
 
-regnexe-py separates memory into practical layers:
+| | Skill | Sub-Agent |
+|---|---|---|
+| Model | Always inherits the parent's | Own `BaseChatModel`, or inherit |
+| Tools | Borrowed by capability id (`tools: [str]`) | Private (`tools: [BaseTool]`), invisible outside |
+| Best for | Cheap, repeatable sub-workflows tightly coupled to the main agent | Independent sub-tasks that need isolation or a different model |
 
-```
-LLM/tool turn
-  |
-  v
-Session state
-  |
-  v
-Cross-session task history
-```
+---
 
-| Layer | Scope | Mechanism |
-|-------|-------|-----------|
-| Layer 1 | Current LLM/tool turn | Messages and tool results in the active graph state |
-| Layer 2 | Same session | LangGraph checkpointer, `MemorySaver` by default |
-| Layer 3 | Cross-session user history | `TaskResultStore`, backed by LangGraph `BaseStore` or in-process memory |
+## 2. Plugin concept: `@plugin` and `@agent_tool`
+
+The two getting-started tools become `@agent_tool` methods on one
+`@plugin`-decorated class — Python's decorator-driven equivalent of constructing raw
+tools by hand. One `with_plugin(WeatherPlugin())` call registers both, sharing one
+`plugin_id` ("weather"). See
+[`examples/readme/03_plugin_decorator.py`](examples/readme/03_plugin_decorator.py).
 
 ```python
-await agent.ainvoke(
-    "Continue the plan from last time",
-    app_id="crm",
-    user_id="alice",
-    session_id="q2-planning",
+from regnexe import agent_tool, plugin
+
+
+@plugin(id="weather", name="Weather Plugin", description="Weather and air quality queries")
+class WeatherPlugin:
+    @agent_tool("Get today's weather for a city.", tags=["weather"])
+    def get_weather(self, city: str) -> str:
+        return "Beijing: sunny, 22 C."
+
+    @agent_tool("Get today's air quality index (AQI) for a city.", tags=["weather"])
+    def get_air_quality(self, city: str) -> str:
+        return "Beijing: AQI 35, excellent air quality."
+
+
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_plugin(WeatherPlugin())        # one call, both @agent_tool methods registered
+    .build()
 )
 ```
 
-The `(app_id, user_id, session_id)` tuple becomes the thread identity for session state.
-Recent task summaries for `(app_id, user_id)` can be injected into future prompts.
+`@plugin`/`@agent_tool` only scans methods today — unlike regnexe-agent's `@Plugin`
+(which can nest `@AgentSkill`/`@AgentSubAgent` inner classes under the same
+`pluginId`), bundling a Skill and a Sub-Agent under one `plugin_id` in Python is done
+by hand-building a `PluginDescriptor` instead — see the next section.
 
-## Events and Streaming
+---
+
+## 3. Plugin packaging: `PluginDescriptor` and `CapabilityDescriptor`
+
+Every loading channel in this README (`with_tool`, `with_skill`, `with_subagent`,
+`with_plugin`, `with_directory`) ultimately builds the same thing: a
+`PluginDescriptor` holding one or more `CapabilityDescriptor`s, installed into a
+`Marketplace`. The most explicit way to build one is by hand — useful when a tool, a
+skill, and a sub-agent should ship together under one `plugin_id`. See
+[`examples/readme/04_plugin_packaging.py`](examples/readme/04_plugin_packaging.py).
+
+```python
+from regnexe.market.simple_marketplace import SimpleMarketplace
+from regnexe.plugin.descriptor import CapabilityDescriptor, PluginDescriptor
+from regnexe.plugin.enums import CapabilityType
+
+trip_plugin = PluginDescriptor(
+    plugin_id="trip-plugin",
+    name="Trip Plugin",
+    capabilities=[
+        CapabilityDescriptor(
+            capability_id="trip-plugin.get_weather",   # pluginId + "." + name
+            plugin_id="trip-plugin",
+            type=CapabilityType.MCP_TOOL,
+            name="get_weather",
+            description="Get today's weather for a city.",
+            tool=get_weather,
+        ),
+        CapabilityDescriptor(
+            capability_id="trip-plugin.travel_advisor",
+            plugin_id="trip-plugin",
+            type=CapabilityType.SKILL,
+            name="travel_advisor",
+            description="Outdoor-activity advice based on current weather.",
+            sub_agent={
+                "name": "travel_advisor",
+                "system_prompt": "Call get_weather, then give a go/no-go running recommendation.",
+                "tools": ["trip-plugin.get_weather"],   # fully-qualified capability id
+            },
+        ),
+        # ... a SUB_AGENT capability follows the same shape, with its own "model" key
+    ],
+)
+
+marketplace = SimpleMarketplace()
+marketplace.install(trip_plugin)
+
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_marketplace(marketplace)
+    .build()
+)
+```
+
+> A Skill's `tools` must reference the tool's *fully-qualified* capability id. If the
+> tool and the skill share a `plugin_id` here, that id is `"trip-plugin.get_weather"`,
+> not bare `"get_weather"`.
+
+---
+
+## 4. File-system directory loading
+
+Best for ops-managed, hot-pluggable capabilities — no Python classes or decorators,
+just files on disk:
+
+```
+weather-plugin/
+  plugin.yaml          <- metadata catalogue entry (MCP_TOOL descriptor)
+  SKILL.md              <- skill content, with YAML frontmatter
+```
 
 ```python
 agent = (
     RegnexeAgentBuilder()
-    .with_model_spec("deepseek:deepseek-v4-flash")
-    .with_event_listener(ConsoleEventListener(show_system_prompt=False))
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_directory("/opt/regnexe-plugins/weather-plugin")
     .build()
 )
 ```
 
-Listeners receive structured events:
+`with_directory()` scans for `SKILL.md` and `plugin.yaml`/`plugin.yml`, registering
+both as `CapabilityDescriptor`s — searchable and resolvable through the marketplace
+like any other loading channel. See
+[`examples/readme/05_file_directory_loading.py`](examples/readme/05_file_directory_loading.py).
 
-| Event | Meaning |
-|-------|---------|
-| `AGENT_STARTED` | A goal has started |
-| `LLM_START` | A model call is about to run |
-| `LLM_END` | A model call finished, including token metadata when available |
-| `TOOL_CALLED` | A tool invocation started |
-| `TOOL_RESULT` | A tool returned output |
-| `AGENT_COMPLETED` | The run completed or errored |
+> **Current limitation**: deepagents only reads a `SKILL.md`'s *content* off real disk
+> when the graph is built with a `FilesystemBackend(root_dir=...)`. `RegnexeAgent`
+> doesn't configure one yet, so a directory-loaded skill is registered, searchable,
+> and resolvable today, but not yet wired into a live agent run — unlike `with_skill()`,
+> whose `system_prompt` lives in-process. Use `with_skill()` for an executable skill
+> today; treat `with_directory()` as a capability catalogue.
 
-Use this for console logs, JSON traces, token accounting, WebSocket updates, or SSE-style
-streaming APIs.
+<details>
+<summary>File format reference</summary>
 
-## Human Approval
+**`plugin.yaml`**
+```yaml
+plugin_id: weather-plugin
+capabilities:
+  - capability_id: weather-plugin.get_weather
+    type: mcp_tool
+    name: get_weather
+    description: "Get today's weather for a city"
+    tags: [weather]
+```
 
-For sensitive workflows, pass deepagents interrupt rules through the builder:
+**`SKILL.md`**
+```markdown
+---
+name: advisor
+plugin_id: weather-plugin
+capability_id: weather-plugin.advisor
+description: "Outdoor activity advisor. TRIGGER: when the user asks about outdoor plans."
+tags: [weather]
+---
+You are a weather advisor. Given the user's question about an outdoor activity,
+recommend whether to go, plus one practical tip.
+```
+
+</details>
+
+---
+
+## 5. Marketplace
+
+Every loading channel above ends the same way: capabilities land in a marketplace. The
+default `SimpleMarketplace` is an in-memory index — install, search, resolve. See
+[`examples/readme/06_marketplace.py`](examples/readme/06_marketplace.py).
+
+```python
+marketplace = SimpleMarketplace()
+marketplace.install(weather_plugin)
+
+candidates = marketplace.search("Check today's weather in Beijing")   # v1: query ignored, returns all
+resolved = marketplace.resolve("weather-plugin.get_weather")
+```
+
+The `Marketplace` protocol is `install`/`search`/`resolve` — but `RegnexeAgent`'s graph
+construction also calls `split_by_type()` internally, which isn't part of the
+protocol. The simplest way to swap the backing store (a database table, a vector
+index, a tenant-aware service) is subclassing `SimpleMarketplace` and overriding
+`install()`/`search()`/`resolve()`, keeping `split_by_type()` for free:
+
+```python
+class InMemoryDbMarketplace(SimpleMarketplace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.table: dict[str, PluginDescriptor] = {}
+
+    def install(self, plugin: PluginDescriptor) -> None:
+        self.table[plugin.plugin_id] = plugin
+        super().install(plugin)
+
+    def find_by_tag(self, tag: str) -> list[PluginDescriptor]:
+        return [p for p in self.table.values()
+                if any(tag in cap.tags for cap in p.capabilities)]
+
+
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_marketplace(InMemoryDbMarketplace())   # any custom marketplace plugs in here
+    .build()
+)
+```
+
+---
+
+## 6. Three layers of memory
+
+Three independent layers, each solving a different problem. See
+[`examples/readme/07_three_layer_memory.py`](examples/readme/07_three_layer_memory.py).
+
+| Layer | Question it answers | Config knob | Default |
+|---|---|---|---|
+| Layer 1 — current turn | "What's in this one LLM/tool turn?" | always on | Messages and tool results in active graph state |
+| Layer 2 — same session | "What did we say earlier in this `session_id`?" | `with_checkpointer(...)` | `MemorySaver` |
+| Layer 3 — cross-session | "What did this user accomplish in past sessions?" | `with_store(...)` | In-process `TaskResultStore` |
 
 ```python
 agent = (
     RegnexeAgentBuilder()
-    .with_model_spec("deepseek:deepseek-v4-flash")
-    .with_interrupt_on({"dangerous_tool": True})
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_plugin(WeatherPlugin())
+    .build()
+)
+
+# Layer 2: same session_id -- Turn 2 recalls Turn 1 without re-querying the tool
+await agent.ainvoke("Check today's weather in Beijing.", app_id="a", user_id="u", session_id="s1")
+await agent.ainvoke("What should I wear, based on that?", app_id="a", user_id="u", session_id="s1")
+
+# Layer 3: a brand-new session_id, same user -- recalls the prior task's summary
+await agent.ainvoke("What was the weather I asked about earlier?", app_id="a", user_id="u", session_id="s2")
+```
+
+`(app_id, user_id, session_id)` becomes the thread identity for Layer 2. Recent task
+summaries for `(app_id, user_id)` are injected into the system prompt of future
+sessions for Layer 3.
+
+---
+
+## 7. Observability
+
+`ConsoleEventListener` — used as the default throughout this README — prints
+`AGENT_STARTED`/`LLM_START`/`LLM_END`/`TOOL_CALLED`/`TOOL_RESULT`/`AGENT_COMPLETED`
+events to stdout. See
+[`examples/readme/08_observability.py`](examples/readme/08_observability.py).
+
+```python
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_event_listener(ConsoleEventListener())
     .build()
 )
 ```
 
-See `examples/10_interrupt_example.py` for an approval and resume flow.
+`AbstractEventListener` (its base class) suppresses `LLM_START`/`LLM_END` by default —
+pass `show_llm_events=True` to see them, plus `show_token_usage=True` for token
+counts:
+
+```python
+ConsoleEventListener(show_llm_events=True, show_token_usage=True)
+```
+
+Write your own listener for structured JSON logs, token accounting, or SSE streaming
+by extending `AbstractEventListener` (or `AgentEventListener` directly, for full
+control over filtering) — override `on_event`, and optionally `should_handle` to pick
+exactly which event types you care about. See
+[`examples/06_custom_event_listener.py`](examples/06_custom_event_listener.py) and
+[`examples/07_streaming_api.py`](examples/07_streaming_api.py).
+
+---
+
+## 8. Human approval and cancellation
+
+Two independent control-flow mechanisms, for two different situations.
+
+### Human approval (`with_interrupt_on` / `aresume`)
+
+For sensitive tool calls, pre-configure a pause **before a specific tool**, keyed by
+tool name:
+
+```python
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_interrupt_on({"transfer_funds": True})
+    .build()
+)
+
+result = await agent.ainvoke("Transfer CNY 5000 to ACC-002.", app_id="a", user_id="u", session_id="s")
+# result.status == "interrupted"; result.metadata["interrupt"] holds the pending action requests
+
+result = await agent.aresume([{"type": "approve"}], app_id="a", user_id="u", session_id="s")
+# result.status == "completed" -- the transfer actually ran
+```
+
+See [`examples/10_interrupt_example.py`](examples/10_interrupt_example.py) for the
+full approval-and-resume flow.
+
+### Cancel & Resume (`acancel` / `cancel`)
+
+Unlike `with_interrupt_on()`, `acancel()` is **user-triggered** and can land at any
+point — e.g. a "Stop" button in a chat UI — not just before a pre-configured tool. See
+[`examples/readme/09_cancel_and_resume.py`](examples/readme/09_cancel_and_resume.py).
+
+```python
+run = asyncio.create_task(
+    agent.ainvoke("Generate a financial report on Q2 sales.", app_id="a", user_id="u", session_id="s")
+)
+# ... from a concurrent task, once you decide to stop it:
+await agent.acancel(app_id="a", user_id="u", session_id="s")
+
+result = await run
+# result.status == "cancelled" -- not an exception, a normal AgentResult
+
+# LangGraph checkpoints after every completed step; a later plain ainvoke() on the
+# same session_id just continues -- no special resume call needed here.
+await agent.ainvoke("Please finish that report.", app_id="a", user_id="u", session_id="s")
+```
+
+`acancel()` must be called from a different `asyncio.Task` than the one running
+`ainvoke()`/`aresume()` — cancelling your own awaiting task is a no-op.
+
+---
 
 ## Examples
 
-The `examples/` directory contains ten progressive examples:
+The [`examples/`](examples) directory contains progressive, end-to-end-runnable
+scripts, plus a [`examples/readme/`](examples/readme) set mirroring every section
+above:
 
 | # | Example | What it demonstrates |
 |---|---------|----------------------|
-| 01 | `01_weather_example.py` | `@plugin`, `@agent_tool`, direct tool calls, multi-turn session |
-| 02 | `02_contract_analyzer.py` | Skill-style sub-agent with private tools |
-| 03 | `03_travel_planner.py` | Fully autonomous nested sub-agent |
-| 04 | `04_business_trip.py` | Tool + skill + sub-agent in one workflow |
-| 05 | `05_session_memory.py` | Same-session and cross-session memory |
-| 06 | `06_custom_event_listener.py` | Custom listener, JSON logs, token aggregation |
-| 07 | `07_streaming_api.py` | SSE-style streaming through event callbacks |
-| 08 | `08_multi_model.py` | Different models for outer agent and inner skill |
-| 09 | `09_file_plugin_loading.py` | Loading `SKILL.md` from files |
-| 10 | `10_interrupt_example.py` | Human approval, interrupt, and resume |
+| 01 | [`01_weather_example.py`](examples/01_weather_example.py) | `@plugin`, `@agent_tool`, direct tool calls, multi-turn session |
+| 02 | [`02_contract_analyzer.py`](examples/02_contract_analyzer.py) | Skill-style sub-agent with private tools |
+| 03 | [`03_travel_planner.py`](examples/03_travel_planner.py) | Fully autonomous nested sub-agent |
+| 04 | [`04_business_trip.py`](examples/04_business_trip.py) | Tool + skill + sub-agent in one workflow |
+| 05 | [`05_session_memory.py`](examples/05_session_memory.py) | Same-session and cross-session memory |
+| 06 | [`06_custom_event_listener.py`](examples/06_custom_event_listener.py) | Custom listener, JSON logs, token aggregation |
+| 07 | [`07_streaming_api.py`](examples/07_streaming_api.py) | SSE-style streaming through event callbacks |
+| 08 | [`08_multi_model.py`](examples/08_multi_model.py) | Different models for outer agent and inner skill |
+| 09 | [`09_file_plugin_loading.py`](examples/09_file_plugin_loading.py) | Loading `SKILL.md` from files |
+| 10 | [`10_interrupt_example.py`](examples/10_interrupt_example.py) | Human approval, interrupt, and resume |
+| 11 | [`11_cancel_example.py`](examples/11_cancel_example.py) | User-triggered cancellation mid-flight |
+
+| # | README example | Section |
+|---|-----------------|---------|
+| 01 | [`readme/01_multi_tool.py`](examples/readme/01_multi_tool.py) | Quick Start |
+| 02 | [`readme/02_skill_vs_subagent.py`](examples/readme/02_skill_vs_subagent.py) | 1. Skill vs Sub-Agent |
+| 03 | [`readme/03_plugin_decorator.py`](examples/readme/03_plugin_decorator.py) | 2. `@plugin` and `@agent_tool` |
+| 04 | [`readme/04_plugin_packaging.py`](examples/readme/04_plugin_packaging.py) | 3. Plugin packaging |
+| 05 | [`readme/05_file_directory_loading.py`](examples/readme/05_file_directory_loading.py) | 4. File-system directory loading |
+| 06 | [`readme/06_marketplace.py`](examples/readme/06_marketplace.py) | 5. Marketplace |
+| 07 | [`readme/07_three_layer_memory.py`](examples/readme/07_three_layer_memory.py) | 6. Three layers of memory |
+| 08 | [`readme/08_observability.py`](examples/readme/08_observability.py) | 7. Observability |
+| 09 | [`readme/09_cancel_and_resume.py`](examples/readme/09_cancel_and_resume.py) | 8. Cancel & Resume |
 
 ```bash
-python examples/01_weather_example.py
+python examples/readme/01_multi_tool.py
 ```
-
-More details: [examples/README.md](examples/README.md)
 
 ## Reference
 
@@ -413,17 +639,33 @@ More details: [examples/README.md](examples/README.md)
 | `with_default_model(Vendor, str)` | - | LLM vendor + model name |
 | `with_model(BaseChatModel)` | - | Provide a pre-built LangChain chat model |
 | `with_model_spec(str)` | - | Parse `vendor:model_name` and resolve the model |
+| `with_tool(*tools)` | - | Register one or more pre-built LangChain tools as MCP_TOOL capabilities |
 | `with_plugin(*instances)` | - | Register one or more `@plugin` Python objects |
 | `with_directory(path)` | - | Scan a directory for `SKILL.md` and plugin descriptor files |
-| `with_skill(...)` | - | Register a file-based skill directory |
-| `with_skill_agent(...)` | - | Register a focused skill backed by a sub-agent config |
-| `with_subagent(...)` | - | Register an autonomous deepagents sub-agent config |
-| `with_checkpointer(checkpointer)` | `MemorySaver` | LangGraph same-session state |
-| `with_store(store)` | in-process memory fallback | LangGraph store for cross-session task history |
+| `with_skill(...)` | - | Register a SKILL backed by a sub-agent config (inherits the parent model, shared tools) |
+| `with_skill_dir(...)` | - | Register a file-based SKILL.md directory directly |
+| `with_subagent(...)` | - | Register a SUB_AGENT config (own model, private tools) |
+| `with_marketplace(marketplace)` | `SimpleMarketplace()` | Replace the default in-memory marketplace |
+| `with_checkpointer(checkpointer)` | `MemorySaver` | LangGraph same-session state (Layer 2) |
+| `with_store(store)` | in-process memory fallback | LangGraph store for cross-session task history (Layer 3) |
 | `with_event_listener(listener)` | none | Hook for LLM, tool, and agent lifecycle events |
-| `with_interrupt_on(dict)` | none | Human-in-the-loop interrupt configuration |
+| `with_interrupt_on(dict)` | none | Human-in-the-loop interrupt configuration, keyed by tool name |
 | `with_system_prompt(str)` | none | Prepend custom system instructions |
 | `with_session_buffer_size(int)` | `10` | Reserved session buffer setting |
+
+</details>
+
+<details>
+<summary>RegnexeAgent methods</summary>
+
+| Method | Description |
+|--------|-------------|
+| `ainvoke(goal, app_id, user_id, session_id)` | Run a goal; async |
+| `invoke(...)` | Synchronous wrapper around `ainvoke` |
+| `aresume(decisions, app_id, user_id, session_id)` | Fulfil a pending `with_interrupt_on()` approval gate |
+| `resume(...)` | Synchronous wrapper around `aresume` |
+| `acancel(app_id, user_id, session_id)` | Stop the run in flight for this session; must be called from a concurrent `asyncio.Task` |
+| `cancel(...)` | Synchronous wrapper around `acancel` |
 
 </details>
 
@@ -454,7 +696,8 @@ More details: [examples/README.md](examples/README.md)
 |--------|---------|
 | `completed` | Goal completed |
 | `error` | Execution raised an exception and returned the error text |
-| `interrupted` | Reserved status for interrupted flows |
+| `interrupted` | Paused at a `with_interrupt_on()` gate; resume with `aresume()` |
+| `cancelled` | Stopped by `acancel()`; resume with a plain `ainvoke()` |
 
 </details>
 

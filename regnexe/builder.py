@@ -58,6 +58,18 @@ class RegnexeAgentBuilder:
 
     # ------------------------------------------------------------------ capabilities
 
+    def with_marketplace(self, marketplace: SimpleMarketplace) -> Self:
+        """Replace the default in-memory marketplace with a custom backing store.
+
+        Must expose the same interface as SimpleMarketplace (install/search/resolve/
+        split_by_type) -- RegnexeAgent's graph construction calls split_by_type()
+        internally, which isn't part of the Marketplace protocol, so the simplest way
+        to swap storage (e.g. a database table) is subclassing SimpleMarketplace and
+        overriding install()/search()/resolve().
+        """
+        self._marketplace = marketplace
+        return self
+
     def with_plugin(self, *instances: object) -> Self:
         """Register one or more @plugin-decorated class instances."""
         for inst in instances:

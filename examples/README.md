@@ -1,6 +1,8 @@
 # regnexe-py Examples
 
-Ten progressively more advanced examples covering every major feature of regnexe-py.
+Progressively more advanced examples covering every major feature of regnexe-py, plus
+a [`readme/`](readme) set mirroring every section of the top-level
+[`README.md`](../README.md).
 
 | # | File | Capability type | Key feature |
 |---|------|-----------------|-------------|
@@ -14,6 +16,10 @@ Ten progressively more advanced examples covering every major feature of regnexe
 | 08 | [08_multi_model.py](08_multi_model.py) | — | Different vendors for outer agent vs inner skill |
 | 09 | [09_file_plugin_loading.py](09_file_plugin_loading.py) | SKILL | `with_directory()` — load SKILL.md from files |
 | 10 | [10_interrupt_example.py](10_interrupt_example.py) | — | Human-in-the-loop: interrupt + approve + resume |
+| 11 | [11_cancel_example.py](11_cancel_example.py) | — | User-triggered cancellation mid-flight, then continue |
+
+See [`readme/`](readme) for the README-aligned set (Skill vs Sub-Agent, plugin
+packaging, marketplace, three-layer memory, observability, cancel & resume).
 
 ## Prerequisites
 
@@ -24,8 +30,8 @@ pip install regnexe-py
 Set at least one API key:
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...   # used in most examples
-export DASHSCOPE_API_KEY=sk-...  # Aliyun Qwen (example 08)
+export DEEPSEEK_KEY=sk-...   # used in most examples
+export ALIYUN_KEY=sk-...     # Aliyun Qwen (example 08, and the Sub-Agent's own model in readme/02 and 04)
 ```
 
 ## Running an example
@@ -38,7 +44,7 @@ python examples/01_weather_example.py
 
 | Type | Builder method | deepagents mapping |
 |------|---------------|-------------------|
-| `MCP_TOOL` | `.with_plugin(instance)` | passed as `tools=` |
-| `SKILL` | `.with_skill_agent(id, name, desc, sub_agent)` | passed as `subagents=` with focused system_prompt |
-| `SKILL` (file) | `.with_skill(id, name, desc, path)` or `.with_directory(path)` | passed as `skills=` |
-| `SUB_AGENT` | `.with_subagent(id, name, desc, sub_agent)` | passed as `subagents=` |
+| `MCP_TOOL` | `.with_tool(*tools)` or `.with_plugin(instance)` | passed as `tools=` |
+| `SKILL` | `.with_skill(capability_id, sub_agent, ...)` | passed as `subagents=` with focused system_prompt; no `model` key allowed |
+| `SKILL` (file) | `.with_skill_dir(capability_id, name, desc, path)` or `.with_directory(path)` | passed as `skills=` |
+| `SUB_AGENT` | `.with_subagent(capability_id, sub_agent, ...)` | passed as `subagents=`; `sub_agent["model"]` may differ from the parent |

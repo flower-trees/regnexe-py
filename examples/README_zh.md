@@ -1,6 +1,7 @@
 # regnexe-py 示例
 
-十个由浅入深的示例，覆盖 regnexe-py 的所有核心功能。
+由浅入深的示例，覆盖 regnexe-py 的所有核心功能，外加一套
+[`readme/`](readme)，对应顶层 [`README.md`](../README.md) 的每一节。
 
 | 编号 | 文件 | 能力类型 | 核心特性 |
 |------|------|----------|----------|
@@ -14,6 +15,10 @@
 | 08 | [08_multi_model.py](08_multi_model.py) | — | 外层 Agent 与内层 Skill 使用不同厂商模型 |
 | 09 | [09_file_plugin_loading.py](09_file_plugin_loading.py) | SKILL | `with_directory()` 从文件加载 SKILL.md |
 | 10 | [10_interrupt_example.py](10_interrupt_example.py) | — | 人工审批：中断 → 人工确认 → 恢复执行 |
+| 11 | [11_cancel_example.py](11_cancel_example.py) | — | 用户主动触发中途取消，再继续执行 |
+
+按 README 章节对应的版本见 [`readme/`](readme)（Skill 与 Sub-Agent、插件打包、
+Marketplace、三层记忆、可观测性、取消与恢复）。
 
 ## 快速开始
 
@@ -24,8 +29,8 @@ pip install regnexe-py
 配置 API Key（至少一个）：
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...   # 大多数示例使用
-export DASHSCOPE_API_KEY=sk-...  # 阿里云通义（示例 08）
+export DEEPSEEK_KEY=sk-...   # 大多数示例使用
+export ALIYUN_KEY=sk-...     # 阿里云通义（示例 08，以及 readme/02、readme/04 中 Sub-Agent 自己的模型）
 ```
 
 运行示例：
@@ -38,10 +43,10 @@ python examples/01_weather_example.py
 
 | 类型 | Builder 方法 | deepagents 映射 | Java 对应 |
 |------|-------------|-----------------|-----------|
-| `MCP_TOOL` | `.with_plugin(实例)` | `tools=` | Plugin Tool |
-| `SKILL` | `.with_skill_agent(id, name, desc, sub_agent)` | `subagents=`，带专属 system_prompt | SkillConfig |
-| `SKILL`（文件） | `.with_skill(id, name, desc, 路径)` 或 `.with_directory(路径)` | `skills=` | SKILL.md |
-| `SUB_AGENT` | `.with_subagent(id, name, desc, sub_agent)` | `subagents=` | SubAgent |
+| `MCP_TOOL` | `.with_tool(*工具)` 或 `.with_plugin(实例)` | `tools=` | Plugin Tool |
+| `SKILL` | `.with_skill(capability_id, sub_agent, ...)` | `subagents=`，带专属 system_prompt，不允许传 `model` 键 | SkillConfig |
+| `SKILL`（文件） | `.with_skill_dir(capability_id, name, desc, 路径)` 或 `.with_directory(路径)` | `skills=` | SKILL.md |
+| `SUB_AGENT` | `.with_subagent(capability_id, sub_agent, ...)` | `subagents=`，`sub_agent["model"]` 可以和父 Agent 不同 | SubAgent |
 
 ## 三层记忆说明
 
