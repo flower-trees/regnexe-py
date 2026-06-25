@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +51,7 @@ class RegnexeAgent:
         self._session_buffer_size = session_buffer_size
         self._session_key = SessionKey()
         self._deep_agent: Any = None   # lazy-compiled deepagents graph
+        self._running_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------ public
 
@@ -130,6 +132,45 @@ class RegnexeAgent:
             self.aresume(decisions, app_id=app_id, user_id=user_id, session_id=session_id)
         )
 
+    async def acancel(
+        self,
+        app_id: str = "default",
+        user_id: str = "default",
+        session_id: str = "default",
+    ) -> bool:
+        """Stop the run currently in flight for this session, at whatever point it's at.
+
+        Unlike with_interrupt_on() (a pre-configured pause before a specific tool, for
+        approval), this is a user-triggered stop that can land at any point. The target
+        ainvoke()/aresume() call must be running as a separate asyncio.Task (e.g. via
+        asyncio.create_task(...)) -- cancelling your own awaiting task is a no-op since
+        there is no concurrent task to deliver the cancellation to.
+
+        Returns True if a running task was found and cancelled, False if nothing was
+        in flight for this session. The cancelled call returns a normal
+        AgentResult(status="cancelled") rather than raising -- LangGraph checkpoints
+        after every completed step, so a later plain ainvoke() on the same session_id
+        continues from the last completed step (no aresume() needed; that path is only
+        for fulfilling a pending with_interrupt_on() approval).
+        """
+        thread_id = self._session_key.to_thread_id(app_id, user_id, session_id)
+        task = self._running_tasks.get(thread_id)
+        if task is None or task.done():
+            return False
+        return task.cancel()
+
+    def cancel(
+        self,
+        app_id: str = "default",
+        user_id: str = "default",
+        session_id: str = "default",
+    ) -> bool:
+        """Synchronous wrapper around :meth:`acancel`."""
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(
+            self.acancel(app_id=app_id, user_id=user_id, session_id=session_id)
+        )
+
     # ------------------------------------------------------------------ internals
 
     async def _effective_system_prompt(self, app_id: str, user_id: str) -> str | None:
@@ -158,6 +199,7 @@ class RegnexeAgent:
         status = "completed"
         interrupt_payload: Any = None
 
+        self._running_tasks[thread_id] = asyncio.current_task()
         try:
             async for event in deep_agent.astream_events(input_, config=config, version="v2"):
                 await self._dispatch(event)
@@ -171,9 +213,19 @@ class RegnexeAgent:
                     interrupt.value for task in state.tasks for interrupt in task.interrupts
                 ]
 
+        except asyncio.CancelledError:
+            # Deliberately not re-raised: LangGraph already checkpointed every step
+            # completed so far, so callers get a normal AgentResult(status="cancelled")
+            # instead of having to catch CancelledError themselves.
+            status = "cancelled"
+            state = await deep_agent.aget_state(config)
+            final_text = self._extract_final_text(state)
+
         except Exception as exc:
             status = "error"
             final_text = str(exc)
+        finally:
+            self._running_tasks.pop(thread_id, None)
 
         # Layer 3: persist task result
         await self._task_store.save(
