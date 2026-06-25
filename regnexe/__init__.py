@@ -6,7 +6,7 @@ from regnexe.event.abstract_listener import AbstractEventListener
 from regnexe.event.console_listener import ConsoleEventListener
 from regnexe.event.listener import AgentEventListener
 from regnexe.llm.vendor import Vendor
-from regnexe.plugin.decorators import agent_tool, plugin
+from regnexe.plugin.decorators import agent_skill, agent_subagent, agent_tool, plugin
 from regnexe.result import AgentResult
 
 __all__ = [
@@ -18,5 +18,7 @@ __all__ = [
     "Vendor",
     "plugin",
     "agent_tool",
+    "agent_skill",
+    "agent_subagent",
     "AgentResult",
 ]

@@ -7,7 +7,13 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from regnexe.plugin.decorators import _PLUGIN_META_ATTR, _TOOL_META_ATTR
+from regnexe.llm.model_provider import resolve_sub_agent_model
+from regnexe.plugin.decorators import (
+    _PLUGIN_META_ATTR,
+    _SKILL_META_ATTR,
+    _SUBAGENT_META_ATTR,
+    _TOOL_META_ATTR,
+)
 from regnexe.plugin.descriptor import CapabilityDescriptor, PluginDescriptor
 from regnexe.plugin.enums import CapabilityType
 
@@ -24,24 +30,41 @@ class SimpleMarketplace:
             self._capabilities[cap.capability_id] = cap
 
     def install_instance(self, instance: object) -> None:
-        """Scan a @plugin-decorated class instance and register its @agent_tool methods."""
+        """Scan a decorated class instance and register its capabilities.
+
+        Dispatches on whichever class-level decorator is present:
+        - ``@plugin``: scans ``@agent_tool`` methods (MCP_TOOL), plus nested
+          ``@agent_skill``/``@agent_subagent`` inner classes, all bundled under one
+          ``plugin_id``.
+        - ``@agent_skill`` / ``@agent_subagent`` (standalone, no ``@plugin``):
+          registers as its own single-capability plugin -- capability_id = plugin_id
+          = the decorator's ``id``.
+        """
         cls = type(instance)
+
         plugin_meta = getattr(cls, _PLUGIN_META_ATTR, None)
-        if plugin_meta is None:
-            raise ValueError(f"{cls.__name__} must be decorated with @plugin")
+        if plugin_meta is not None:
+            self._install_plugin_bean(instance, cls, plugin_meta["id"])
+            return
 
-        plugin_id = plugin_meta["id"]
-        for method_name, _ in inspect.getmembers(cls, predicate=inspect.isfunction):
-            fn = getattr(cls, method_name)
-            tool_meta = getattr(fn, _TOOL_META_ATTR, None)
-            if tool_meta is None:
-                continue
+        skill_meta = getattr(cls, _SKILL_META_ATTR, None)
+        if skill_meta is not None:
+            self._register_skill(skill_meta["id"], skill_meta)
+            return
 
-            bound = getattr(instance, method_name)
+        subagent_meta = getattr(cls, _SUBAGENT_META_ATTR, None)
+        if subagent_meta is not None:
+            self._register_subagent(subagent_meta["id"], subagent_meta, instance, cls)
+            return
+
+        raise ValueError(
+            f"{cls.__name__} must be decorated with @plugin, @agent_skill, or @agent_subagent"
+        )
+
+    def _install_plugin_bean(self, instance: object, cls: type, plugin_id: str) -> None:
+        for method_name, bound, tool_meta in self._scan_tool_methods(instance, cls):
             lc_tool = StructuredTool.from_function(
-                func=bound,
-                name=method_name,
-                description=tool_meta["description"],
+                func=bound, name=method_name, description=tool_meta["description"],
             )
             capability_id = f"{plugin_id}.{method_name}"
             self._capabilities[capability_id] = CapabilityDescriptor(
@@ -53,6 +76,63 @@ class SimpleMarketplace:
                 tags=tool_meta["tags"],
                 tool=lc_tool,
             )
+
+        for _, nested_cls in inspect.getmembers(cls, predicate=inspect.isclass):
+            nested_skill_meta = getattr(nested_cls, _SKILL_META_ATTR, None)
+            if nested_skill_meta is not None:
+                self._register_skill(f"{plugin_id}.{nested_skill_meta['id']}", nested_skill_meta)
+                continue
+
+            nested_subagent_meta = getattr(nested_cls, _SUBAGENT_META_ATTR, None)
+            if nested_subagent_meta is not None:
+                nested_instance = nested_cls()   # no-arg construction, like Java's reflective newInstance()
+                self._register_subagent(
+                    f"{plugin_id}.{nested_subagent_meta['id']}",
+                    nested_subagent_meta, nested_instance, nested_cls,
+                )
+
+    def _register_skill(self, capability_id: str, skill_meta: dict) -> None:
+        self.install_skill_agent(
+            capability_id=capability_id,
+            sub_agent={
+                "name": skill_meta["id"],
+                "description": skill_meta["description"],
+                "system_prompt": skill_meta["system_prompt"],
+                "tools": skill_meta["allowed_tools"],
+            },
+            tags=skill_meta["tags"],
+        )
+
+    def _register_subagent(
+        self, capability_id: str, subagent_meta: dict, instance: object, cls: type,
+    ) -> None:
+        sub_agent: dict[str, Any] = {
+            "name": subagent_meta["id"],
+            "description": subagent_meta["description"],
+            "system_prompt": subagent_meta["system_prompt"],
+            "tools": self._scan_own_tools(instance, cls),
+        }
+        if subagent_meta["model"]:
+            sub_agent["model"] = subagent_meta["model"]   # resolved by install_subagent()
+        self.install_subagent(capability_id=capability_id, sub_agent=sub_agent, tags=subagent_meta["tags"])
+
+    @staticmethod
+    def _scan_tool_methods(instance: object, cls: type) -> list[tuple[str, Any, dict]]:
+        """Find @agent_tool-decorated methods on cls, bound to instance."""
+        results = []
+        for method_name, _ in inspect.getmembers(cls, predicate=inspect.isfunction):
+            fn = getattr(cls, method_name)
+            tool_meta = getattr(fn, _TOOL_META_ATTR, None)
+            if tool_meta is None:
+                continue
+            results.append((method_name, getattr(instance, method_name), tool_meta))
+        return results
+
+    def _scan_own_tools(self, instance: object, cls: type) -> list[StructuredTool]:
+        return [
+            StructuredTool.from_function(func=bound, name=method_name, description=tool_meta["description"])
+            for method_name, bound, tool_meta in self._scan_tool_methods(instance, cls)
+        ]
 
     def install_skill(
         self,
@@ -82,6 +162,7 @@ class SimpleMarketplace:
         description: str | None = None,
     ) -> None:
         """Register a SUB_AGENT capability (deepagents SubAgent TypedDict)."""
+        sub_agent = resolve_sub_agent_model(sub_agent)
         self._capabilities[capability_id] = CapabilityDescriptor(
             capability_id=capability_id,
             plugin_id=capability_id.split(".")[0],

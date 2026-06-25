@@ -269,84 +269,47 @@ agent = (
 
 ---
 
-## 2. Plugin concept: `@plugin` and `@agent_tool`
-
-The two getting-started tools become `@agent_tool` methods on one
-`@plugin`-decorated class — Python's decorator-driven equivalent of constructing raw
-tools by hand. One `with_plugin(WeatherPlugin())` call registers both, sharing one
-`plugin_id` ("weather"). See
-[`examples/readme/03_plugin_decorator.py`](examples/readme/03_plugin_decorator.py).
-
-```python
-from regnexe import agent_tool, plugin
-
-
-@plugin(id="weather", name="Weather Plugin", description="Weather and air quality queries")
-class WeatherPlugin:
-    @agent_tool("Get today's weather for a city.", tags=["weather"])
-    def get_weather(self, city: str) -> str:
-        return "Beijing: sunny, 22 C."
-
-    @agent_tool("Get today's air quality index (AQI) for a city.", tags=["weather"])
-    def get_air_quality(self, city: str) -> str:
-        return "Beijing: AQI 35, excellent air quality."
-
-
-agent = (
-    RegnexeAgentBuilder()
-    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
-    .with_plugin(WeatherPlugin())        # one call, both @agent_tool methods registered
-    .build()
-)
-```
-
-`@plugin`/`@agent_tool` only scans methods today — unlike regnexe-agent's `@Plugin`
-(which can nest `@AgentSkill`/`@AgentSubAgent` inner classes under the same
-`pluginId`), bundling a Skill and a Sub-Agent under one `plugin_id` in Python is done
-by hand-building a `PluginDescriptor` instead — see the next section.
-
----
-
-## 3. Plugin packaging: `PluginDescriptor` and `CapabilityDescriptor`
+## 2. Plugin packaging: `PluginDescriptor.builder()`
 
 Every loading channel in this README (`with_tool`, `with_skill`, `with_subagent`,
 `with_plugin`, `with_directory`) ultimately builds the same thing: a
 `PluginDescriptor` holding one or more `CapabilityDescriptor`s, installed into a
-`Marketplace`. The most explicit way to build one is by hand — useful when a tool, a
-skill, and a sub-agent should ship together under one `plugin_id`. See
-[`examples/readme/04_plugin_packaging.py`](examples/readme/04_plugin_packaging.py).
+`Marketplace`. The most direct way to build one by hand is `PluginDescriptor.builder()`,
+which has `tool(...)`, `skill_config(...)`, and `sub_agent_config(...)` — each wraps
+the raw tool/config dict into a `CapabilityDescriptor` automatically, id'd as
+`"<plugin_id>.<name>"`. One call bundles a whole mixed-type plugin instead of
+hand-building each `CapabilityDescriptor` separately. See
+[`examples/readme/03_plugin_packaging.py`](examples/readme/03_plugin_packaging.py).
 
 ```python
 from regnexe.market.simple_marketplace import SimpleMarketplace
-from regnexe.plugin.descriptor import CapabilityDescriptor, PluginDescriptor
-from regnexe.plugin.enums import CapabilityType
+from regnexe.plugin.descriptor import PluginDescriptor
 
-trip_plugin = PluginDescriptor(
-    plugin_id="trip-plugin",
-    name="Trip Plugin",
-    capabilities=[
-        CapabilityDescriptor(
-            capability_id="trip-plugin.get_weather",   # pluginId + "." + name
-            plugin_id="trip-plugin",
-            type=CapabilityType.MCP_TOOL,
-            name="get_weather",
-            description="Get today's weather for a city.",
-            tool=get_weather,
-        ),
-        CapabilityDescriptor(
-            capability_id="trip-plugin.travel_advisor",
-            plugin_id="trip-plugin",
-            type=CapabilityType.SKILL,
-            name="travel_advisor",
-            description="Outdoor-activity advice based on current weather.",
-            sub_agent={
-                "name": "travel_advisor",
-                "system_prompt": "Call get_weather, then give a go/no-go running recommendation.",
-                "tools": ["trip-plugin.get_weather"],   # fully-qualified capability id
-            },
-        ),
-        # ... a SUB_AGENT capability follows the same shape, with its own "model" key
-    ],
+travel_advisor = {
+    "name": "travel_advisor",
+    "description": "Outdoor-activity advice based on current weather.",
+    "system_prompt": "Call get_weather, then give a go/no-go running recommendation.",
+    "tools": ["trip-plugin.get_weather"],   # fully-qualified capability id, not owned
+}
+
+expense_estimator = {
+    "name": "expense_estimator",
+    "description": "Estimates business trip cost.",
+    "system_prompt": "Call estimate_trip_cost, then report the total.",
+    "model": "aliyun:qwen-plus",   # plain "vendor:model_name" string -- own model
+    "tools": [estimate_trip_cost],
+}
+
+trip_plugin = (
+    PluginDescriptor.builder()
+    .plugin_id("trip-plugin")
+    .version("1.0")
+    .name("Trip Plugin")
+    .description("Bundles a tool, a skill, and a sub-agent for trip planning")
+    .tool(get_weather)                     # -> trip-plugin.get_weather
+    .skill_config(travel_advisor)          # -> trip-plugin.travel_advisor
+    .sub_agent_config(expense_estimator)   # -> trip-plugin.expense_estimator
+    .build()
 )
 
 marketplace = SimpleMarketplace()
@@ -362,7 +325,74 @@ agent = (
 
 > A Skill's `tools` must reference the tool's *fully-qualified* capability id. If the
 > tool and the skill share a `plugin_id` here, that id is `"trip-plugin.get_weather"`,
-> not bare `"get_weather"`.
+> not bare `"get_weather"`. `skill_config()` raises if a `"model"` key is present —
+> a Skill always inherits the parent's model.
+
+---
+
+## 3. Plugin concept: `@plugin`, `@agent_tool`, `@agent_skill`, `@agent_subagent`
+
+The two getting-started tools become `@agent_tool` methods on one `@plugin`-decorated
+class. `@agent_skill` and `@agent_subagent` — the same Skill and Sub-Agent from
+section 1, as decorators instead of raw dicts — nest as inner classes of that same
+`@plugin` class, bundling everything under one `plugin_id`: one
+`with_plugin(WeatherPlugin())` call registers two tools, a skill, and a sub-agent at
+once. `@agent_skill` is a pure marker (a Skill never owns tools, so no methods are
+needed); `@agent_subagent` reuses `@agent_tool` for its private tools, exactly like the
+outer `@plugin` does for MCP_TOOL — the only difference is the resulting capability
+type. See
+[`examples/readme/04_plugin_decorator.py`](examples/readme/04_plugin_decorator.py).
+
+```python
+from regnexe import agent_skill, agent_subagent, agent_tool, plugin
+
+
+@plugin(id="weather", name="Weather Plugin", description="Weather, advice, and trip cost estimation")
+class WeatherPlugin:
+    @agent_tool("Get today's weather for a city.", tags=["weather"])
+    def get_weather(self, city: str) -> str:
+        return "Beijing: sunny, 22 C."
+
+    @agent_tool("Get today's air quality index (AQI) for a city.", tags=["weather"])
+    def get_air_quality(self, city: str) -> str:
+        return "Beijing: AQI 35, excellent air quality."
+
+    @agent_skill(
+        id="travel_advisor",
+        description=(
+            "Gives outdoor-activity advice based on the current weather for a city. "
+            "TRIGGER: Use when the user asks whether the weather is suitable for an outdoor activity."
+        ),
+        system_prompt="Call get_weather, then give a short go/no-go running recommendation.",
+        allowed_tools=["weather.get_weather"],   # full capability id within this plugin
+    )
+    class TravelAdvisorSkill:
+        pass   # No @agent_tool methods -- a Skill can't own private tools.
+
+    @agent_subagent(
+        id="expense_estimator",
+        description="Estimates the total cost of a business trip. TRIGGER: Use when the user asks for a trip budget.",
+        system_prompt="Call estimate_trip_cost with the trip length and destination, then report the total.",
+        model="aliyun:qwen-plus",   # own model, independent of the parent's default model
+    )
+    class ExpenseEstimatorSubAgent:
+        @agent_tool("Estimates total cost for a multi-day business trip.")
+        def estimate_trip_cost(self, days: int, city: str) -> str:
+            return f"{days}-day {city} trip estimate: 3600 CNY total."
+
+
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_plugin(WeatherPlugin())   # one call: two tools, a skill, and a sub-agent
+    .build()
+)
+```
+
+`@agent_skill`/`@agent_subagent` also work standalone (not nested) —
+`with_plugin(TravelAdvisorSkill())` on its own registers it as its own
+single-capability plugin, the same way the code-first `with_skill()`/`with_subagent()`
+from section 1 do.
 
 ---
 
@@ -617,8 +647,8 @@ above:
 |---|-----------------|---------|
 | 01 | [`readme/01_multi_tool.py`](examples/readme/01_multi_tool.py) | Quick Start |
 | 02 | [`readme/02_skill_vs_subagent.py`](examples/readme/02_skill_vs_subagent.py) | 1. Skill vs Sub-Agent |
-| 03 | [`readme/03_plugin_decorator.py`](examples/readme/03_plugin_decorator.py) | 2. `@plugin` and `@agent_tool` |
-| 04 | [`readme/04_plugin_packaging.py`](examples/readme/04_plugin_packaging.py) | 3. Plugin packaging |
+| 03 | [`readme/03_plugin_packaging.py`](examples/readme/03_plugin_packaging.py) | 2. Plugin packaging |
+| 04 | [`readme/04_plugin_decorator.py`](examples/readme/04_plugin_decorator.py) | 3. `@plugin` and `@agent_tool` |
 | 05 | [`readme/05_file_directory_loading.py`](examples/readme/05_file_directory_loading.py) | 4. File-system directory loading |
 | 06 | [`readme/06_marketplace.py`](examples/readme/06_marketplace.py) | 5. Marketplace |
 | 07 | [`readme/07_three_layer_memory.py`](examples/readme/07_three_layer_memory.py) | 6. Three layers of memory |

@@ -253,82 +253,46 @@ agent = (
 
 ---
 
-## 2. 插件概念：`@plugin` 和 `@agent_tool`
-
-入门示例里的两个工具，变成一个 `@plugin` 类上的两个 `@agent_tool` 方法——Python 用装饰器
-代替手动构造原始工具的方式。一次 `with_plugin(WeatherPlugin())` 调用就能同时注册两个，
-共用一个 `plugin_id`（"weather"）。代码见
-[`examples/readme/03_plugin_decorator.py`](examples/readme/03_plugin_decorator.py)。
-
-```python
-from regnexe import agent_tool, plugin
-
-
-@plugin(id="weather", name="Weather Plugin", description="天气与空气质量查询")
-class WeatherPlugin:
-    @agent_tool("Get today's weather for a city.", tags=["weather"])
-    def get_weather(self, city: str) -> str:
-        return "北京：晴，22°C。"
-
-    @agent_tool("Get today's air quality index (AQI) for a city.", tags=["weather"])
-    def get_air_quality(self, city: str) -> str:
-        return "北京：AQI 35，空气质量优。"
-
-
-agent = (
-    RegnexeAgentBuilder()
-    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
-    .with_plugin(WeatherPlugin())        # 一次调用，两个 @agent_tool 方法都注册了
-    .build()
-)
-```
-
-`@plugin`/`@agent_tool` 目前只扫描方法——不像 regnexe-agent 的 `@Plugin`（可以把
-`@AgentSkill`/`@AgentSubAgent` 作为内部类嵌套进同一个 `pluginId`），Python 里要把一个
-Skill 和一个 Sub-Agent 打包到同一个 `plugin_id` 下，需要手动构造 `PluginDescriptor`——见
-下一节。
-
----
-
-## 3. 插件打包：`PluginDescriptor` 与 `CapabilityDescriptor`
+## 2. 插件打包：`PluginDescriptor.builder()`
 
 本文档里的每一种加载方式（`with_tool`、`with_skill`、`with_subagent`、`with_plugin`、
 `with_directory`）最终都是在构造同一个东西：一个装着一个或多个 `CapabilityDescriptor` 的
-`PluginDescriptor`，安装进一个 `Marketplace`。最直接的手动构造方式就是自己拼装——适合一个
-tool、一个 skill 和一个 subagent 需要共用一个 `plugin_id` 一起发布的场景。代码见
-[`examples/readme/04_plugin_packaging.py`](examples/readme/04_plugin_packaging.py)。
+`PluginDescriptor`，安装进一个 `Marketplace`。最直接的手动构造方式是
+`PluginDescriptor.builder()`，它有 `tool(...)`、`skill_config(...)`、
+`sub_agent_config(...)` 三个方法——每个都会自动把原始工具/配置字典包装成
+`CapabilityDescriptor`，id 为 `"<plugin_id>.<name>"`。一次调用就能打包一个混合类型的插件，
+不需要再手动一个个构造 `CapabilityDescriptor`。代码见
+[`examples/readme/03_plugin_packaging.py`](examples/readme/03_plugin_packaging.py)。
 
 ```python
 from regnexe.market.simple_marketplace import SimpleMarketplace
-from regnexe.plugin.descriptor import CapabilityDescriptor, PluginDescriptor
-from regnexe.plugin.enums import CapabilityType
+from regnexe.plugin.descriptor import PluginDescriptor
 
-trip_plugin = PluginDescriptor(
-    plugin_id="trip-plugin",
-    name="Trip Plugin",
-    capabilities=[
-        CapabilityDescriptor(
-            capability_id="trip-plugin.get_weather",   # pluginId + "." + name
-            plugin_id="trip-plugin",
-            type=CapabilityType.MCP_TOOL,
-            name="get_weather",
-            description="Get today's weather for a city.",
-            tool=get_weather,
-        ),
-        CapabilityDescriptor(
-            capability_id="trip-plugin.travel_advisor",
-            plugin_id="trip-plugin",
-            type=CapabilityType.SKILL,
-            name="travel_advisor",
-            description="根据当前天气给出户外活动建议。",
-            sub_agent={
-                "name": "travel_advisor",
-                "system_prompt": "调用 get_weather，再给出去/不去跑步的建议。",
-                "tools": ["trip-plugin.get_weather"],   # 完整的能力 id
-            },
-        ),
-        # ... SUB_AGENT 能力是同样的结构，多一个自己的 "model" 键
-    ],
+travel_advisor = {
+    "name": "travel_advisor",
+    "description": "根据当前天气给出户外活动建议。",
+    "system_prompt": "调用 get_weather，再给出去/不去跑步的建议。",
+    "tools": ["trip-plugin.get_weather"],   # 完整能力 id，按 id 借用，不是自己拥有
+}
+
+expense_estimator = {
+    "name": "expense_estimator",
+    "description": "估算商务出行的总花费。",
+    "system_prompt": "调用 estimate_trip_cost，然后汇报总价。",
+    "model": "aliyun:qwen-plus",   # 一个普通的 "vendor:model_name" 字符串——自己的模型
+    "tools": [estimate_trip_cost],
+}
+
+trip_plugin = (
+    PluginDescriptor.builder()
+    .plugin_id("trip-plugin")
+    .version("1.0")
+    .name("Trip Plugin")
+    .description("打包一个 tool、一个 skill 和一个 subagent 用于行程规划")
+    .tool(get_weather)                     # -> trip-plugin.get_weather
+    .skill_config(travel_advisor)          # -> trip-plugin.travel_advisor
+    .sub_agent_config(expense_estimator)   # -> trip-plugin.expense_estimator
+    .build()
 )
 
 marketplace = SimpleMarketplace()
@@ -344,6 +308,70 @@ agent = (
 
 > Skill 的 `tools` 必须引用工具的**完整**能力 id。如果 tool 和 skill 共用同一个
 > `plugin_id`，这里的 id 就是 `"trip-plugin.get_weather"`，不是裸的 `"get_weather"`。
+> `skill_config()` 一旦发现传了 `"model"` 键就会报错——Skill 永远继承父 Agent 的模型。
+
+---
+
+## 3. 插件概念：`@plugin`、`@agent_tool`、`@agent_skill`、`@agent_subagent`
+
+入门示例里的两个工具，变成一个 `@plugin` 类上的两个 `@agent_tool` 方法。`@agent_skill` 和
+`@agent_subagent`——第 1 节里同样的 Skill 和 Sub-Agent，只是用装饰器代替原始字典——可以作为
+这个 `@plugin` 类的内部类嵌套进去，全部打包在同一个 `plugin_id` 下：一次
+`with_plugin(WeatherPlugin())` 调用就能同时注册两个 tool、一个 skill 和一个 subagent。
+`@agent_skill` 是纯标记装饰器（Skill 永远不拥有工具，不需要任何方法）；`@agent_subagent`
+复用 `@agent_tool` 来声明私有工具，跟外层 `@plugin` 扫描 MCP_TOOL 的方式完全一样——唯一的
+区别是最终生成的能力类型。代码见
+[`examples/readme/04_plugin_decorator.py`](examples/readme/04_plugin_decorator.py)。
+
+```python
+from regnexe import agent_skill, agent_subagent, agent_tool, plugin
+
+
+@plugin(id="weather", name="Weather Plugin", description="天气、出行建议与费用估算")
+class WeatherPlugin:
+    @agent_tool("Get today's weather for a city.", tags=["weather"])
+    def get_weather(self, city: str) -> str:
+        return "北京：晴，22°C。"
+
+    @agent_tool("Get today's air quality index (AQI) for a city.", tags=["weather"])
+    def get_air_quality(self, city: str) -> str:
+        return "北京：AQI 35，空气质量优。"
+
+    @agent_skill(
+        id="travel_advisor",
+        description=(
+            "根据城市当前天气给出户外活动建议。"
+            "TRIGGER: 用户询问天气是否适合户外活动时使用。"
+        ),
+        system_prompt="调用 get_weather，再给出去/不去跑步的建议。",
+        allowed_tools=["weather.get_weather"],   # 插件内的完整能力 id
+    )
+    class TravelAdvisorSkill:
+        pass   # 不需要 @agent_tool 方法——Skill 不能拥有私有工具。
+
+    @agent_subagent(
+        id="expense_estimator",
+        description="估算商务出行的总花费。TRIGGER: 用户询问行程预算或费用估算时使用。",
+        system_prompt="调用 estimate_trip_cost，传入行程天数和目的地，然后汇报总价。",
+        model="aliyun:qwen-plus",   # 自己的模型，独立于父 Agent 的默认模型
+    )
+    class ExpenseEstimatorSubAgent:
+        @agent_tool("Estimates total cost for a multi-day business trip.")
+        def estimate_trip_cost(self, days: int, city: str) -> str:
+            return f"{days}天{city}行程预估：共3600元人民币。"
+
+
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_plugin(WeatherPlugin())   # 一次调用：两个 tool、一个 skill、一个 subagent
+    .build()
+)
+```
+
+`@agent_skill`/`@agent_subagent` 也可以单独使用（不嵌套）——单独
+`with_plugin(TravelAdvisorSkill())` 会把它注册成自己独立的单能力插件，效果等同于第 1 节里
+代码直注册的 `with_skill()`/`with_subagent()`。
 
 ---
 
@@ -587,8 +615,8 @@ await agent.ainvoke("请继续把那份报告生成完。", app_id="a", user_id=
 |------|-------------|----------|
 | 01 | [`readme/01_multi_tool.py`](examples/readme/01_multi_tool.py) | 快速开始 |
 | 02 | [`readme/02_skill_vs_subagent.py`](examples/readme/02_skill_vs_subagent.py) | 1. Skill 与 Sub-Agent |
-| 03 | [`readme/03_plugin_decorator.py`](examples/readme/03_plugin_decorator.py) | 2. `@plugin` 与 `@agent_tool` |
-| 04 | [`readme/04_plugin_packaging.py`](examples/readme/04_plugin_packaging.py) | 3. 插件打包 |
+| 03 | [`readme/03_plugin_packaging.py`](examples/readme/03_plugin_packaging.py) | 2. 插件打包 |
+| 04 | [`readme/04_plugin_decorator.py`](examples/readme/04_plugin_decorator.py) | 3. `@plugin` 与 `@agent_tool` |
 | 05 | [`readme/05_file_directory_loading.py`](examples/readme/05_file_directory_loading.py) | 4. 文件系统目录加载 |
 | 06 | [`readme/06_marketplace.py`](examples/readme/06_marketplace.py) | 5. Marketplace |
 | 07 | [`readme/07_three_layer_memory.py`](examples/readme/07_three_layer_memory.py) | 6. 三层记忆 |

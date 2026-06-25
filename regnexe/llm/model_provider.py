@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
@@ -54,3 +55,20 @@ class ModelProvider:
             raise ValueError(f"Invalid model spec '{spec}': expected 'vendor:model_name'")
         vendor = Vendor(vendor_str)
         return self.resolve(vendor, model_name)
+
+
+def resolve_sub_agent_model(sub_agent: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a sub_agent["model"] of "vendor:model_name" (regnexe's own Vendor
+    namespace, e.g. "aliyun:qwen-plus") to a BaseChatModel.
+
+    deepagents accepts a bare string for "model" too, but resolves it itself via
+    LangChain's init_chat_model, which uses a different provider namespace and does
+    not know regnexe vendors like "aliyun"/"doubao"/etc. Resolving here keeps vendor
+    routing consistent with with_default_model()/with_model_spec().
+
+    Returns the same dict unchanged if "model" is absent or already a BaseChatModel.
+    """
+    model = sub_agent.get("model")
+    if isinstance(model, str):
+        return {**sub_agent, "model": ModelProvider().resolve_from_spec(model)}
+    return sub_agent
