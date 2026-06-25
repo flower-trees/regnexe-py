@@ -108,14 +108,14 @@ class SimpleMarketplace:
         """
         if "model" in sub_agent:
             raise ValueError(
-                f"with_skill_agent '{capability_id}': model is not allowed; "
+                f"with_skill '{capability_id}': model is not allowed; "
                 "skill agents inherit the parent model. Use with_subagent() to specify a custom model."
             )
         tools = sub_agent.get("tools", [])
         for t in tools:
             if not isinstance(t, str):
                 raise ValueError(
-                    f"with_skill_agent '{capability_id}': tools must be str capability IDs "
+                    f"with_skill '{capability_id}': tools must be str capability IDs "
                     f"registered in the marketplace, got {type(t).__name__!r}. "
                     "Use with_subagent() for private @tool objects."
                 )

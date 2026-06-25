@@ -5,8 +5,8 @@ Scenario: 3-day Chengdu business trip assistant using all three capability types
   contract_analyzer SKILL     -- skill agent sharing analyze_clause from parent marketplace
   travel_planner    SUB_AGENT -- fully autonomous nested agent with private tools
 
-with_skill_agent vs with_subagent:
-  contract_analyzer uses with_skill_agent: analyze_clause is registered in the parent
+with_skill vs with_subagent:
+  contract_analyzer uses with_skill: analyze_clause is registered in the parent
     marketplace and referenced by str ID "analyze_clause" in the skill's tools list.
   travel_planner uses with_subagent: get_attractions / get_restaurants are private
     @tool objects invisible to the outer agent.
@@ -142,7 +142,7 @@ async def main() -> None:
         .with_tool(analyze_clause)
         # SKILL: sub-agent with focused system_prompt, shares analyze_clause via str ID.
         # name/description come from CONTRACT_SKILL dict automatically.
-        .with_skill_agent(
+        .with_skill(
             capability_id="legal.contract_analyzer",
             sub_agent=CONTRACT_SKILL,
             tags=["legal", "contract"],

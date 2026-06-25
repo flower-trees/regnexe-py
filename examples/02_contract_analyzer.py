@@ -1,15 +1,15 @@
-"""Example 02 — SKILL capability: with_skill_agent (shared tool, str reference)
+"""Example 02 — SKILL capability: with_skill (shared tool, str reference)
 
 Scenario: legal risk analysis of contract clauses.
 Capability type: SKILL — a sub-agent whose system_prompt focuses it on legal analysis,
 and whose tools are shared from the parent marketplace (referenced by str capability ID).
 
 Key distinction:
-  with_skill_agent  tools must be str capability IDs already in the parent marketplace.
-                    The framework resolves them to BaseTool objects at build time.
-                    The skill inherits the parent model.
-  with_subagent     tools are private @tool objects; the parent agent cannot see them.
-                    Can optionally set its own model.
+  with_skill         tools must be str capability IDs already in the parent marketplace.
+                     The framework resolves them to BaseTool objects at build time.
+                     The skill inherits the parent model.
+  with_subagent      tools are private @tool objects; the parent agent cannot see them.
+                     Can optionally set its own model.
 
 Flow:
   outer agent  ──delegates──►  contract_analyzer (SKILL)
@@ -71,7 +71,7 @@ async def main() -> None:
         .with_tool(analyze_clause)
         # Skill agent references it by str ID; framework resolves at build time.
         # name/description come from CONTRACT_SKILL dict automatically.
-        .with_skill_agent(
+        .with_skill(
             capability_id="legal.contract_analyzer",
             sub_agent=CONTRACT_SKILL,
             tags=["legal", "contract", "risk"],

@@ -10,17 +10,19 @@ Flow:
   4. On rejection, the session is abandoned.
 
 Under the hood:
-  - with_interrupt_on() maps to deepagents' interrupt_on parameter.
+  - with_interrupt_on() maps directly to deepagents' interrupt_on parameter, which deepagents
+    forwards to langchain's HumanInTheLoopMiddleware. The shape is keyed by TOOL NAME (not by
+    graph node name): dict[str, bool | InterruptOnConfig].
+      * True                            -> interrupt; allow approve/edit/reject/respond
+      * False                           -> auto-approve, no interrupt
+      * {"allowed_decisions": [...]}    -> interrupt; restrict to the listed decisions
   - LangGraph checkpointer persists the paused state keyed by thread_id.
-  - Resuming is a second ainvoke() call with the same session_id and a follow-up message.
-
-Note: the exact interrupt node name depends on the deepagents version.
-      Inspect `deep_agent.get_graph().nodes` to find available interrupt points.
+  - A plain ainvoke() with a follow-up message does NOT fulfill the interrupt -- the
+    paused tool call needs an explicit human decision. Resuming uses agent.aresume(),
+    which sends Command(resume={"decisions": [...]}) on the same session_id/thread.
 """
 
 import asyncio
-
-from langchain_core.tools import tool
 
 from regnexe import ConsoleEventListener, RegnexeAgentBuilder, Vendor, agent_tool, plugin
 
@@ -51,14 +53,14 @@ class FinancePlugin:
 async def run_with_interrupt() -> None:
     """Two-phase invocation: initial run -> human review -> resume."""
 
-    # Configure interrupt_on so the agent pauses before acting on tool calls.
-    # The value here is illustrative; check deepagents docs for the exact node name.
+    # Configure interrupt_on keyed by tool name: pause before transfer_funds (sensitive),
+    # but leave check_balance auto-approved since it has no entry here.
     agent = (
         RegnexeAgentBuilder()
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
         .with_plugin(FinancePlugin())
         .with_event_listener(ConsoleEventListener())
-        .with_interrupt_on({"interrupt_before": ["tools"]})   # pause before any tool call
+        .with_interrupt_on({"transfer_funds": True})
         .build()
     )
 
@@ -76,22 +78,25 @@ async def run_with_interrupt() -> None:
 
     print("\n=== Phase 1 result ===")
     print("Status :", result1.status)
-    print("Output :", result1.final_text[:300] or "(agent paused at interrupt)")
+    if result1.status == "interrupted":
+        for pending in result1.metadata["interrupt"]:
+            for req in pending["action_requests"]:
+                print(f"  Pending action: {req['name']}({req['args']})")
+    else:
+        print("Output :", result1.final_text[:300])
+        return
 
     # ── Human review step ─────────────────────────────────────────────────────
     print("\n" + "=" * 60)
-    approved = _human_approval_gate(result1.final_text)
+    approved = _human_approval_gate()
     print("=" * 60)
 
-    if not approved:
-        print("Transfer rejected by human reviewer. Session abandoned.")
-        return
-
     # ── Phase 2: resume with the same session_id ──────────────────────────────
-    print("\nPhase 2: Resuming after approval...")
+    decision = {"type": "approve"} if approved else {"type": "reject", "message": "Rejected by human reviewer."}
+    print("\nPhase 2: Resuming with decision:", decision)
 
-    result2 = await agent.ainvoke(
-        "Approved. Please proceed with the transfer.",
+    result2 = await agent.aresume(
+        [decision],
         app_id="finance-app", user_id="manager1", session_id=session_id,  # same session
     )
 
@@ -100,10 +105,9 @@ async def run_with_interrupt() -> None:
     print("Output :\n", result2.final_text)
 
 
-def _human_approval_gate(agent_output: str) -> bool:
+def _human_approval_gate() -> bool:
     """Simulate a human reviewing the agent's proposed action."""
-    print("\n[HUMAN REVIEW] Agent proposed:")
-    print(f"  {agent_output[:200] or '(pending action)'}")
+    print("\n[HUMAN REVIEW] Agent paused with a pending action awaiting approval.")
     print("\n[HUMAN REVIEW] Approve? Simulating: YES")
     return True   # change to False to simulate rejection
 

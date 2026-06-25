@@ -15,6 +15,7 @@ import asyncio
 from typing import Any
 
 from regnexe import RegnexeAgentBuilder, Vendor, agent_tool, plugin
+from regnexe.event.listener import AgentEventListener
 
 
 def print_sse(event: str, data: str) -> None:
@@ -24,8 +25,13 @@ def print_sse(event: str, data: str) -> None:
     print()  # blank line terminates an SSE message
 
 
-class SseEventListener:
-    """Translates agent events into SSE-formatted lines."""
+class SseEventListener(AgentEventListener):
+    """Translates agent events into SSE-formatted lines.
+
+    Extends AgentEventListener directly (not AbstractEventListener) because
+    AbstractEventListener suppresses LLM_END by default, and this listener
+    needs it to stream the final answer in chunks.
+    """
 
     async def on_event(self, event_type: str, name: str, data: dict[str, Any]) -> None:
         match event_type:

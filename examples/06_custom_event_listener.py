@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from regnexe import RegnexeAgentBuilder, Vendor, agent_tool, plugin
+from regnexe.event.listener import AgentEventListener
 
 
 @dataclass
@@ -29,8 +30,13 @@ class _UsageAccumulator:
         return self.input_tokens + self.output_tokens
 
 
-class JsonFileEventListener:
-    """Writes every agent event as a JSON line and tracks cumulative token usage."""
+class JsonFileEventListener(AgentEventListener):
+    """Writes every agent event as a JSON line and tracks cumulative token usage.
+
+    Extends AgentEventListener directly (not AbstractEventListener) because
+    AbstractEventListener suppresses LLM_START/LLM_END by default, and this
+    listener needs both to accumulate token usage.
+    """
 
     def __init__(self, log_path: str = "/tmp/regnexe_agent.jsonl") -> None:
         self._log_path = log_path

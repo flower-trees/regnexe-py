@@ -56,7 +56,7 @@ async def _run_contract_analysis(clauses: str) -> str:
     inner_agent = (
         RegnexeAgentBuilder()
         .with_model(inner_model)
-        .with_skill_agent(
+        .with_skill(
             capability_id="legal.contract_analyzer",
             sub_agent=_CONTRACT_SKILL,
         )

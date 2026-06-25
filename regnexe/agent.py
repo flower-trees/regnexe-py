@@ -60,55 +60,17 @@ class RegnexeAgent:
         user_id: str = "default",
         session_id: str = "default",
     ) -> AgentResult:
-        task_id = str(uuid.uuid4())
         thread_id = self._session_key.to_thread_id(app_id, user_id, session_id)
-        config = {"configurable": {"thread_id": thread_id}}
-
-        # Layer 3: inject recent cross-session task history into system prompt
-        recent = await self._task_store.load_recent(app_id, user_id)
-        history_ctx = TaskResultStore.format_for_prompt(recent)
-
-        system_parts = [p for p in [self._system_prompt, history_ctx] if p]
-        effective_system = "\n\n".join(system_parts) if system_parts else None
-
+        effective_system = await self._effective_system_prompt(app_id, user_id)
         deep_agent = self._get_or_create_agent(effective_system)
 
-        if self._listener:
-            await self._listener.dispatch("AGENT_STARTED", "RegnexeAgent", {"goal": goal, "task_id": task_id})
-
-        final_text = ""
-        status = "completed"
-
-        try:
-            async for event in deep_agent.astream_events(
-                {"messages": [HumanMessage(content=goal)]},
-                config=config,
-                version="v2",
-            ):
-                await self._dispatch(event)
-
-            state = await deep_agent.aget_state(config)
-            final_text = self._extract_final_text(state)
-
-        except Exception as exc:
-            status = "error"
-            final_text = str(exc)
-
-        # Layer 3: persist task result
-        await self._task_store.save(
-            app_id, user_id, task_id, goal,
-            summary=final_text[:500],
-            status=status,
-        )
-
-        if self._listener:
-            await self._listener.dispatch("AGENT_COMPLETED", "RegnexeAgent", {"status": status})
-
-        return AgentResult(
-            status=status,
-            final_text=final_text,
-            task_id=task_id,
+        return await self._run_graph(
+            deep_agent,
             thread_id=thread_id,
+            input_={"messages": [HumanMessage(content=goal)]},
+            app_id=app_id,
+            user_id=user_id,
+            log_goal=goal,
         )
 
     def invoke(
@@ -124,7 +86,112 @@ class RegnexeAgent:
             self.ainvoke(goal, app_id=app_id, user_id=user_id, session_id=session_id)
         )
 
+    async def aresume(
+        self,
+        decisions: list[dict[str, Any]],
+        app_id: str = "default",
+        user_id: str = "default",
+        session_id: str = "default",
+    ) -> AgentResult:
+        """Resume a thread paused by with_interrupt_on() with human decisions.
+
+        Each decision matches langgraph/langchain's HumanInTheLoopMiddleware Decision
+        shape, e.g. ``{"type": "approve"}``, ``{"type": "reject", "message": "..."}``,
+        ``{"type": "edit", "edited_action": {...}}``, or
+        ``{"type": "respond", "message": "..."}``. Supply exactly one decision per
+        pending interrupted tool call, in the same order they were requested (see
+        ``AgentResult.metadata["interrupt"]`` from the call that produced the pause).
+        """
+        from langgraph.types import Command
+
+        thread_id = self._session_key.to_thread_id(app_id, user_id, session_id)
+        effective_system = await self._effective_system_prompt(app_id, user_id)
+        deep_agent = self._get_or_create_agent(effective_system)
+
+        return await self._run_graph(
+            deep_agent,
+            thread_id=thread_id,
+            input_=Command(resume={"decisions": decisions}),
+            app_id=app_id,
+            user_id=user_id,
+            log_goal=f"[resume] decisions={decisions}",
+        )
+
+    def resume(
+        self,
+        decisions: list[dict[str, Any]],
+        app_id: str = "default",
+        user_id: str = "default",
+        session_id: str = "default",
+    ) -> AgentResult:
+        """Synchronous wrapper around :meth:`aresume`."""
+        import asyncio
+        return asyncio.get_event_loop().run_until_complete(
+            self.aresume(decisions, app_id=app_id, user_id=user_id, session_id=session_id)
+        )
+
     # ------------------------------------------------------------------ internals
+
+    async def _effective_system_prompt(self, app_id: str, user_id: str) -> str | None:
+        """Layer 3: inject recent cross-session task history into the system prompt."""
+        recent = await self._task_store.load_recent(app_id, user_id)
+        history_ctx = TaskResultStore.format_for_prompt(recent)
+        system_parts = [p for p in [self._system_prompt, history_ctx] if p]
+        return "\n\n".join(system_parts) if system_parts else None
+
+    async def _run_graph(
+        self,
+        deep_agent: Any,
+        thread_id: str,
+        input_: Any,
+        app_id: str,
+        user_id: str,
+        log_goal: str,
+    ) -> AgentResult:
+        task_id = str(uuid.uuid4())
+        config = {"configurable": {"thread_id": thread_id}}
+
+        if self._listener:
+            await self._listener.dispatch("AGENT_STARTED", "RegnexeAgent", {"goal": log_goal, "task_id": task_id})
+
+        final_text = ""
+        status = "completed"
+        interrupt_payload: Any = None
+
+        try:
+            async for event in deep_agent.astream_events(input_, config=config, version="v2"):
+                await self._dispatch(event)
+
+            state = await deep_agent.aget_state(config)
+            final_text = self._extract_final_text(state)
+
+            if state.next:
+                status = "interrupted"
+                interrupt_payload = [
+                    interrupt.value for task in state.tasks for interrupt in task.interrupts
+                ]
+
+        except Exception as exc:
+            status = "error"
+            final_text = str(exc)
+
+        # Layer 3: persist task result
+        await self._task_store.save(
+            app_id, user_id, task_id, log_goal,
+            summary=final_text[:500],
+            status=status,
+        )
+
+        if self._listener:
+            await self._listener.dispatch("AGENT_COMPLETED", "RegnexeAgent", {"status": status})
+
+        return AgentResult(
+            status=status,
+            final_text=final_text,
+            task_id=task_id,
+            thread_id=thread_id,
+            metadata={"interrupt": interrupt_payload} if interrupt_payload else {},
+        )
 
     def _get_or_create_agent(self, system_prompt: str | None) -> Any:
         """Build the deepagents graph on first call; reuse on subsequent calls."""

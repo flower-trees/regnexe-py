@@ -69,7 +69,7 @@ class RegnexeAgentBuilder:
         self._marketplace.install_from_file(path)
         return self
 
-    def with_skill(
+    def with_skill_dir(
         self,
         capability_id: str,
         name: str,
@@ -81,7 +81,7 @@ class RegnexeAgentBuilder:
         self._marketplace.install_skill(capability_id, name, description, skill_path, tags)
         return self
 
-    def with_skill_agent(
+    def with_skill(
         self,
         capability_id: str,
         sub_agent: Any,
