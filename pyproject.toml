@@ -1,6 +1,6 @@
 [project]
 name = "regnexe-py"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python agent framework built on deepagents, aligned with regnexe-agent"
 readme = "README.md"
 license = { text = "Apache-2.0" }
