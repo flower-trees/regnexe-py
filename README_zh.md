@@ -19,31 +19,7 @@
 能力市场、插件装饰器、显式应用/用户/会话身份、跨会话任务记忆、结构化事件、模型厂商路由，以及
 用户主动触发的取消能力。
 
-```
-用户目标
-  |
-  v
-RegnexeAgent
-  |
-  v
-deepagents graph  ->  LangGraph checkpointer / store
-  |
-  v
-Plugin Marketplace
-  +------------------------------------------------+
-  | 能力加载来源：                                 |
-  |  @plugin Python 对象  ·  PluginDescriptor      |
-  |  SKILL.md / plugin.yaml 目录                   |
-  |  Builder 能力注册方法（with_tool/skill/        |
-  |  subagent）                                    |
-  |                         |                      |
-  |                         v                      |
-  |              CapabilityDescriptor              |
-  |        +----------+---------+-------------+     |
-  |        | MCP_TOOL | SKILL   | SUB_AGENT   |     |
-  |        +----------+---------+-------------+     |
-  +------------------------------------------------+
-```
+<img src="images/readme_1_cn.jpg" width="700" alt="架构图"/>
 
 **相比直接使用 deepagents，regnexe-py 的突出优势：**
 

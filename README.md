@@ -20,31 +20,7 @@ engine, then adds the missing application layer around it: a capability marketpl
 plugin decorators, explicit app/user/session identity, cross-session task memory,
 structured events, model vendor routing, and user-triggered cancellation.
 
-```
-User Goal
-    |
-    v
-RegnexeAgent
-    |
-    v
-deepagents graph  ->  LangGraph checkpointer / store
-    |
-    v
-Plugin Marketplace
-    +------------------------------------------------+
-    | Loading channels:                              |
-    |  @plugin Python object  ·  PluginDescriptor     |
-    |  SKILL.md / plugin.yaml directory               |
-    |  builder capability methods (with_tool/skill/   |
-    |  subagent)                                      |
-    |                         |                      |
-    |                         v                      |
-    |              CapabilityDescriptor              |
-    |        +----------+---------+-------------+     |
-    |        | MCP_TOOL | SKILL   | SUB_AGENT   |     |
-    |        +----------+---------+-------------+     |
-    +------------------------------------------------+
-```
+<img src="images/readme_1_en.jpg" width="700" alt="Architecture"/>
 
 **What sets it apart from using deepagents directly:**
 
