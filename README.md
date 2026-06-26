@@ -10,6 +10,7 @@
   <img src="https://img.shields.io/badge/deepagents-0.6.8%2B-purple" alt="deepagents 0.6.8+"/>
   <img src="https://img.shields.io/badge/LangGraph-0.5%2B-green" alt="LangGraph 0.5+"/>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="Apache 2.0 License"/></a>
+  <a href="https://github.com/flower-trees/regnexe-agent"><img src="https://img.shields.io/badge/Java%20Version-regnexe--agent-orange?logo=openjdk&amp;logoColor=white" alt="Java Version"/></a>
 </p>
 <p align="center">
   <a href="README_zh.md">简体中文</a> | English
