@@ -32,7 +32,7 @@ class ConsoleEventListener(AbstractEventListener):
         show_token_usage: bool = False,
         max_content_len: int = 300,
     ) -> None:
-        super().__init__(show_llm_events=show_llm_events)
+        super().__init__(show_llm_events=show_llm_events or show_token_usage)
         self._show_system = show_system_prompt
         self._show_token = show_token_usage
         self._max_len = max_content_len
