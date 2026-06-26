@@ -23,6 +23,7 @@ class CapabilityDescriptor:
     tags: list[str] = field(default_factory=list)
     tool: Callable | BaseTool | None = None        # MCP_TOOL
     skill_path: str | None = None                  # SKILL → directory containing SKILL.md
+    system_prompt: str | None = None               # SKILL → body of SKILL.md
     sub_agent: Any | None = None                   # SUB_AGENT → deepagents SubAgent TypedDict
     model_kwargs: dict[str, Any] | None = None
 

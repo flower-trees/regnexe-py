@@ -228,7 +228,20 @@ class SimpleMarketplace:
         from regnexe.market.loader import FileCapabilityLoader
         descriptors = FileCapabilityLoader().load_directory(directory)
         for desc in descriptors:
-            self._capabilities[desc.capability_id] = desc
+            if desc.type == CapabilityType.SKILL and desc.system_prompt is not None:
+                allowed_tools = (desc.model_kwargs or {}).get("allowed_tools", [])
+                self.install_skill_agent(
+                    capability_id=desc.capability_id,
+                    sub_agent={
+                        "name": desc.name,
+                        "description": desc.description,
+                        "system_prompt": desc.system_prompt,
+                        "tools": allowed_tools,
+                    },
+                    tags=desc.tags,
+                )
+            else:
+                self._capabilities[desc.capability_id] = desc
 
     # ------------------------------------------------------------------ query
 

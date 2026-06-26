@@ -49,12 +49,13 @@ class FileCapabilityLoader:
     def _load_skill_md(self, path: str) -> CapabilityDescriptor | None:
         with open(path, encoding="utf-8") as f:
             content = f.read()
-        fm, _ = _parse_frontmatter(content)
+        fm, body = _parse_frontmatter(content)
         if not fm.get("name"):
             return None
         skill_dir = os.path.dirname(path)
         plugin_id = fm.get("plugin_id", os.path.basename(skill_dir))
         capability_id = fm.get("capability_id", f"{plugin_id}.skill")
+        allowed_tools = fm.get("allowed_tools") or []
         return CapabilityDescriptor(
             capability_id=capability_id,
             plugin_id=plugin_id,
@@ -63,6 +64,8 @@ class FileCapabilityLoader:
             description=fm.get("description", ""),
             tags=fm.get("tags", []),
             skill_path=skill_dir,
+            system_prompt=body or None,
+            model_kwargs={"allowed_tools": allowed_tools} if allowed_tools else None,
         )
 
     def _load_plugin_yaml(self, path: str) -> list[CapabilityDescriptor]:
