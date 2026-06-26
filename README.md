@@ -141,10 +141,10 @@ asyncio.run(main())
 ```
 [AGENT ▶] RegnexeAgent
           goal: Check today's weather and air quality in Beijing...
-[TOOL  ▶] get_weather  input={"city": "Beijing"}
-[TOOL  ■] get_weather  output=Beijing: sunny, 22 C.
-[TOOL  ▶] get_air_quality  input={"city": "Beijing"}
-[TOOL  ■] get_air_quality  output=Beijing: AQI 35, excellent air quality.
+[TOOL  ▶] mcp_tool:get_weather  input={"city": "Beijing"}
+[TOOL  ■] mcp_tool:get_weather  output=Beijing: sunny, 22 C.
+[TOOL  ▶] mcp_tool:get_air_quality  input={"city": "Beijing"}
+[TOOL  ■] mcp_tool:get_air_quality  output=Beijing: AQI 35, excellent air quality.
 [AGENT ■] status=completed
 ```
 
@@ -552,6 +552,23 @@ agent = (
     .build()
 )
 ```
+
+`TOOL_CALLED`/`TOOL_RESULT` are labeled `"<type>:<name>"` using the capability's
+registered `CapabilityType` (`mcp_tool`, `skill`, `subagent`) — a Skill/Sub-Agent
+dispatch is shown by its own name instead of deepagents' internal `"task"` tool, and
+a tool call made *inside* that Skill/Sub-Agent's own execution is prefixed
+`[<type>:<name>] ` to make the nesting visible:
+
+```
+[TOOL  ▶] subagent:expense_estimator  input="Estimate a 3-day business trip budget in Shanghai."
+[TOOL  ▶] [subagent:expense_estimator] estimate_trip_cost  input={"city": "Shanghai", "days": 3}
+[TOOL  ■] [subagent:expense_estimator] estimate_trip_cost  output=3-day Shanghai trip estimate: 3600 CNY total.
+[TOOL  ■] subagent:expense_estimator  output=The total estimated budget is 3,600 CNY (~$500 USD)...
+```
+
+A tool with no `<type>:` prefix (like `estimate_trip_cost` above) means it isn't
+registered as a marketplace capability under that name — exactly what's expected for
+a Sub-Agent's *private* `tools`, which are deliberately never registered.
 
 `AbstractEventListener` (its base class) suppresses `LLM_START`/`LLM_END` by default —
 pass `show_llm_events=True` to see them, plus `show_token_usage=True` for token

@@ -83,11 +83,11 @@ class ConsoleEventListener(AbstractEventListener):
                     input_str = json.dumps(data.get("input", {}), ensure_ascii=False)
                 except (TypeError, ValueError):
                     input_str = str(data.get("input", ""))
-                print(f"[TOOL  ▶] {name}  input={input_str}")
+                print(f"[TOOL  ▶] {self._label(name, data)}  input={input_str}")
 
             case "TOOL_RESULT":
                 output = str(data.get("output", ""))
-                print(f"[TOOL  ■] {name}  output={self._truncate(output, 200)}")
+                print(f"[TOOL  ■] {self._label(name, data)}  output={self._truncate(output, 200)}")
 
             case "AGENT_COMPLETED":
                 status = data.get("status", "unknown")
@@ -97,3 +97,15 @@ class ConsoleEventListener(AbstractEventListener):
     def _truncate(self, text: str, max_len: int | None = None) -> str:
         n = max_len or self._max_len
         return text[:n] + ("..." if len(text) > n else "")
+
+    @staticmethod
+    def _label(name: str, data: dict[str, Any]) -> str:
+        """Render "<type>:<name>" (e.g. "skill:travel_advisor"), prefixed with
+        "[<type>:<name>] " when nested inside another subagent/skill's own execution.
+        """
+        cap_type = data.get("capability_type")
+        label = f"{cap_type}:{name}" if cap_type else name
+        nested_under = data.get("nested_under")
+        if nested_under:
+            label = f"[{nested_under['type']}:{nested_under['name']}] {label}"
+        return label

@@ -132,10 +132,10 @@ asyncio.run(main())
 ```
 [AGENT ▶] RegnexeAgent
           goal: Check today's weather and air quality in Beijing...
-[TOOL  ▶] get_weather  input={"city": "Beijing"}
-[TOOL  ■] get_weather  output=Beijing: sunny, 22 C.
-[TOOL  ▶] get_air_quality  input={"city": "Beijing"}
-[TOOL  ■] get_air_quality  output=Beijing: AQI 35, excellent air quality.
+[TOOL  ▶] mcp_tool:get_weather  input={"city": "Beijing"}
+[TOOL  ■] mcp_tool:get_weather  output=Beijing: sunny, 22 C.
+[TOOL  ▶] mcp_tool:get_air_quality  input={"city": "Beijing"}
+[TOOL  ■] mcp_tool:get_air_quality  output=Beijing: AQI 35, excellent air quality.
 [AGENT ■] status=completed
 ```
 
@@ -525,6 +525,21 @@ agent = (
     .build()
 )
 ```
+
+`TOOL_CALLED`/`TOOL_RESULT` 会按能力注册时的 `CapabilityType`（`mcp_tool`、`skill`、
+`subagent`）打上 `"<类型>:<名字>"` 前缀——Skill/Sub-Agent 的调用直接显示它自己的名字，而不是
+deepagents 内部的 `"task"` 工具；在这个 Skill/Sub-Agent 自己执行过程**内部**发生的工具调用，
+会额外加一个 `[<类型>:<名字>]` 前缀，把嵌套关系标出来：
+
+```
+[TOOL  ▶] subagent:expense_estimator  input="Estimate a 3-day business trip budget in Shanghai."
+[TOOL  ▶] [subagent:expense_estimator] estimate_trip_cost  input={"city": "Shanghai", "days": 3}
+[TOOL  ■] [subagent:expense_estimator] estimate_trip_cost  output=3-day Shanghai trip estimate: 3600 CNY total.
+[TOOL  ■] subagent:expense_estimator  output=The total estimated budget is 3,600 CNY (~$500 USD)...
+```
+
+如果一个工具没有 `<类型>:` 前缀（比如上面的 `estimate_trip_cost`），说明它没有以这个名字注册成
+市场能力——这正是 Sub-Agent **私有** `tools` 该有的样子，它们本来就故意不注册进市场。
 
 它的基类 `AbstractEventListener` 默认屏蔽 `LLM_START`/`LLM_END`——传
 `show_llm_events=True` 即可显示，再加 `show_token_usage=True` 显示 Token 数：

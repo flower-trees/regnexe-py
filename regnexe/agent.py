@@ -11,12 +11,21 @@ from langchain_core.messages import HumanMessage
 
 from regnexe.event.listener import AgentEventListener
 from regnexe.market.simple_marketplace import SimpleMarketplace
+from regnexe.plugin.enums import CapabilityType
 from regnexe.result import AgentResult
 from regnexe.session.session_key import SessionKey
 from regnexe.session.task_store import TaskResultStore
 
 if TYPE_CHECKING:
     pass
+
+# Display label for each CapabilityType, used to prefix TOOL_CALLED/TOOL_RESULT
+# events as "<label>:<name>" (e.g. "skill:travel_advisor", "mcp_tool:get_weather").
+_CAPABILITY_TYPE_LABELS: dict[CapabilityType, str] = {
+    CapabilityType.MCP_TOOL: "mcp_tool",
+    CapabilityType.SKILL: "skill",
+    CapabilityType.SUB_AGENT: "subagent",
+}
 
 
 class RegnexeAgent:
@@ -52,6 +61,7 @@ class RegnexeAgent:
         self._session_key = SessionKey()
         self._deep_agent: Any = None   # lazy-compiled deepagents graph
         self._running_tasks: dict[str, asyncio.Task] = {}
+        self._capability_types: dict[str, CapabilityType] = {}   # name -> type, for event labeling
 
     # ------------------------------------------------------------------ public
 
@@ -200,9 +210,13 @@ class RegnexeAgent:
         interrupt_payload: Any = None
 
         self._running_tasks[thread_id] = asyncio.current_task()
+        # Tracks in-flight subagent ("task" tool) calls for this run only, keyed by
+        # run_id -- must stay local to this _run_graph() call, not on self, since
+        # acancel() allows multiple ainvoke()/aresume() calls to run concurrently.
+        in_flight: dict[str, dict[str, str]] = {}
         try:
             async for event in deep_agent.astream_events(input_, config=config, version="v2"):
-                await self._dispatch(event)
+                await self._dispatch(event, in_flight)
 
             state = await deep_agent.aget_state(config)
             final_text = self._extract_final_text(state)
@@ -259,6 +273,7 @@ class RegnexeAgent:
         descriptors = self._marketplace.search("")
         descriptors = self._resolve_skill_agent_tools(descriptors)
         tools, skill_paths, subagents = self._marketplace.split_by_type(descriptors)
+        self._capability_types = self._build_capability_type_map(descriptors)
 
         kwargs: dict[str, Any] = dict(
             model=self._model,
@@ -274,11 +289,28 @@ class RegnexeAgent:
 
         return create_deep_agent(**{k: v for k, v in kwargs.items() if v is not None})
 
+    @staticmethod
+    def _build_capability_type_map(descriptors: list[Any]) -> dict[str, CapabilityType]:
+        """Map the name each capability is *invoked* by (deepagents tool/subagent_type
+        name) to its registered CapabilityType, for labeling TOOL_CALLED/TOOL_RESULT
+        events. Unregistered names (e.g. deepagents' own built-in tools) are absent.
+        """
+        capability_types: dict[str, CapabilityType] = {}
+        for desc in descriptors:
+            if desc.type == CapabilityType.MCP_TOOL and desc.tool is not None:
+                capability_types[desc.tool.name] = desc.type
+            elif desc.sub_agent is not None:
+                capability_types[desc.sub_agent.get("name", desc.name)] = desc.type
+        return capability_types
+
+    def _capability_label(self, name: str) -> str | None:
+        cap_type = self._capability_types.get(name)
+        return _CAPABILITY_TYPE_LABELS.get(cap_type) if cap_type else None
+
     def _resolve_skill_agent_tools(
         self, descriptors: list[Any]
     ) -> list[Any]:
         """For SKILL-type sub_agents, resolve string tool IDs to actual BaseTool objects."""
-        from regnexe.plugin.enums import CapabilityType
         result = []
         for desc in descriptors:
             if (
@@ -304,7 +336,7 @@ class RegnexeAgent:
             result.append(desc)
         return result
 
-    async def _dispatch(self, event: dict[str, Any]) -> None:
+    async def _dispatch(self, event: dict[str, Any], in_flight: dict[str, dict[str, str]]) -> None:
         if not self._listener:
             return
         kind = event.get("event", "")
@@ -329,10 +361,92 @@ class RegnexeAgent:
                 await self._listener.dispatch("LLM_END", name, {"usage": usage, "text": text})
 
             case "on_tool_start":
-                await self._listener.dispatch("TOOL_CALLED", name, {"input": data.get("input", {})})
+                await self._dispatch_tool_start(event, in_flight)
 
             case "on_tool_end":
-                await self._listener.dispatch("TOOL_RESULT", name, {"output": data.get("output", "")})
+                await self._dispatch_tool_end(event, in_flight)
+
+    async def _dispatch_tool_start(self, event: dict[str, Any], in_flight: dict[str, dict[str, str]]) -> None:
+        name = event.get("name", "")
+        run_id = event.get("run_id", "")
+        raw_input = event.get("data", {}).get("input", {})
+        nested_under = self._nested_under(event.get("parent_ids", []), in_flight)
+
+        # deepagents dispatches a Skill/Sub-Agent through its own "task" tool,
+        # subagent_type-keyed -- relabel using the subagent's own name instead of
+        # the literal "task", and remember it so nested tool calls inside it (matched
+        # by parent_ids) can be tagged "[<type>:<name>] ...".
+        if name == "task" and isinstance(raw_input, dict) and "subagent_type" in raw_input:
+            subagent_name = raw_input["subagent_type"]
+            label = self._capability_label(subagent_name) or "subagent"
+            in_flight[run_id] = {"type": label, "name": subagent_name}
+            await self._listener.dispatch("TOOL_CALLED", subagent_name, {
+                "input": raw_input.get("description", raw_input),
+                "capability_type": label,
+                "nested_under": nested_under,
+            })
+            return
+
+        await self._listener.dispatch("TOOL_CALLED", name, {
+            "input": raw_input,
+            "capability_type": self._capability_label(name),
+            "nested_under": nested_under,
+        })
+
+    async def _dispatch_tool_end(self, event: dict[str, Any], in_flight: dict[str, dict[str, str]]) -> None:
+        name = event.get("name", "")
+        run_id = event.get("run_id", "")
+        raw_output = event.get("data", {}).get("output", "")
+        nested_under = self._nested_under(event.get("parent_ids", []), in_flight)
+
+        task_ctx = in_flight.pop(run_id, None)
+        if task_ctx is not None:
+            await self._listener.dispatch("TOOL_RESULT", task_ctx["name"], {
+                "output": self._extract_output_text(raw_output),
+                "capability_type": task_ctx["type"],
+                "nested_under": nested_under,
+            })
+            return
+
+        await self._listener.dispatch("TOOL_RESULT", name, {
+            "output": self._extract_output_text(raw_output),
+            "capability_type": self._capability_label(name),
+            "nested_under": nested_under,
+        })
+
+    @staticmethod
+    def _nested_under(parent_ids: list[str], in_flight: dict[str, dict[str, str]]) -> dict[str, str] | None:
+        """Find the innermost active subagent ("task" tool) call this event is nested
+        under, by walking parent_ids from the closest ancestor inward. Looked up by
+        run_id rather than a shared stack, since concurrent ainvoke() calls (acancel())
+        interleave events from independent runs.
+        """
+        for pid in reversed(parent_ids):
+            if pid in in_flight:
+                return in_flight[pid]
+        return None
+
+    @staticmethod
+    def _extract_output_text(output: Any) -> str:
+        """Extract human-readable text from a tool/task result.
+
+        A deepagents "task" (subagent) result is a LangGraph Command whose final
+        answer lives at output.update["messages"][-1].content; a plain tool result is
+        usually a ToolMessage with .content directly.
+        """
+        update = getattr(output, "update", None)
+        if isinstance(update, dict):
+            messages = update.get("messages") or []
+            if messages:
+                content = getattr(messages[-1], "content", None)
+                if isinstance(content, str):
+                    return content
+
+        content = getattr(output, "content", None)
+        if isinstance(content, str):
+            return content
+
+        return str(output)
 
     @staticmethod
     def _extract_final_text(state: Any) -> str:
