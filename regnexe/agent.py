@@ -14,7 +14,6 @@ from regnexe.market.simple_marketplace import SimpleMarketplace
 from regnexe.plugin.enums import CapabilityType
 from regnexe.result import AgentResult
 from regnexe.session.session_key import SessionKey
-from regnexe.session.task_store import TaskResultStore
 
 if TYPE_CHECKING:
     pass
@@ -43,21 +42,19 @@ class RegnexeAgent:
         marketplace: SimpleMarketplace,
         checkpointer: Any,
         store: Any | None,
-        task_store: TaskResultStore,
         listener: AgentEventListener | None,
         interrupt_on: dict[str, Any] | None,
         system_prompt: str | None,
-        session_buffer_size: int,
+        middleware: list[Any],
     ) -> None:
         self._model = model
         self._marketplace = marketplace
         self._checkpointer = checkpointer
         self._store = store
-        self._task_store = task_store
         self._listener = listener
         self._interrupt_on = interrupt_on
         self._system_prompt = system_prompt
-        self._session_buffer_size = session_buffer_size
+        self._middleware = middleware
         self._session_key = SessionKey()
         self._deep_agent: Any = None   # lazy-compiled deepagents graph
         self._running_tasks: dict[str, asyncio.Task] = {}
@@ -73,15 +70,12 @@ class RegnexeAgent:
         session_id: str = "default",
     ) -> AgentResult:
         thread_id = self._session_key.to_thread_id(app_id, user_id, session_id)
-        effective_system = await self._effective_system_prompt(app_id, user_id)
-        deep_agent = self._get_or_create_agent(effective_system)
+        deep_agent = self._get_or_create_agent()
 
         return await self._run_graph(
             deep_agent,
             thread_id=thread_id,
             input_={"messages": [HumanMessage(content=goal)]},
-            app_id=app_id,
-            user_id=user_id,
             log_goal=goal,
         )
 
@@ -117,15 +111,12 @@ class RegnexeAgent:
         from langgraph.types import Command
 
         thread_id = self._session_key.to_thread_id(app_id, user_id, session_id)
-        effective_system = await self._effective_system_prompt(app_id, user_id)
-        deep_agent = self._get_or_create_agent(effective_system)
+        deep_agent = self._get_or_create_agent()
 
         return await self._run_graph(
             deep_agent,
             thread_id=thread_id,
             input_=Command(resume={"decisions": decisions}),
-            app_id=app_id,
-            user_id=user_id,
             log_goal=f"[resume] decisions={decisions}",
         )
 
@@ -183,20 +174,11 @@ class RegnexeAgent:
 
     # ------------------------------------------------------------------ internals
 
-    async def _effective_system_prompt(self, app_id: str, user_id: str) -> str | None:
-        """Layer 3: inject recent cross-session task history into the system prompt."""
-        recent = await self._task_store.load_recent(app_id, user_id)
-        history_ctx = TaskResultStore.format_for_prompt(recent)
-        system_parts = [p for p in [self._system_prompt, history_ctx] if p]
-        return "\n\n".join(system_parts) if system_parts else None
-
     async def _run_graph(
         self,
         deep_agent: Any,
         thread_id: str,
         input_: Any,
-        app_id: str,
-        user_id: str,
         log_goal: str,
     ) -> AgentResult:
         task_id = str(uuid.uuid4())
@@ -241,13 +223,6 @@ class RegnexeAgent:
         finally:
             self._running_tasks.pop(thread_id, None)
 
-        # Layer 3: persist task result
-        await self._task_store.save(
-            app_id, user_id, task_id, log_goal,
-            summary=final_text[:500],
-            status=status,
-        )
-
         if self._listener:
             await self._listener.dispatch("AGENT_COMPLETED", "RegnexeAgent", {"status": status})
 
@@ -259,12 +234,10 @@ class RegnexeAgent:
             metadata={"interrupt": interrupt_payload} if interrupt_payload else {},
         )
 
-    def _get_or_create_agent(self, system_prompt: str | None) -> Any:
+    def _get_or_create_agent(self) -> Any:
         """Build the deepagents graph on first call; reuse on subsequent calls."""
-        cache_key = system_prompt or ""
-        if self._deep_agent is None or getattr(self._deep_agent, "_regnexe_sp_key", None) != cache_key:
-            self._deep_agent = self._build_deep_agent(system_prompt)
-            self._deep_agent._regnexe_sp_key = cache_key  # type: ignore[attr-defined]
+        if self._deep_agent is None:
+            self._deep_agent = self._build_deep_agent(self._system_prompt)
         return self._deep_agent
 
     def _build_deep_agent(self, system_prompt: str | None) -> Any:
@@ -283,6 +256,7 @@ class RegnexeAgent:
             system_prompt=system_prompt,
             checkpointer=self._checkpointer,
             store=self._store,
+            middleware=self._middleware or None,
         )
         if self._interrupt_on:
             kwargs["interrupt_on"] = self._interrupt_on

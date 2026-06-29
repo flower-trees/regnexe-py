@@ -11,7 +11,7 @@ from regnexe.event.listener import AgentEventListener
 from regnexe.llm.model_provider import ModelProvider
 from regnexe.llm.vendor import Vendor
 from regnexe.market.simple_marketplace import SimpleMarketplace
-from regnexe.session.task_store import TaskResultStore
+from regnexe.plugin.descriptor import PluginDescriptor
 
 
 class RegnexeAgentBuilder:
@@ -36,7 +36,7 @@ class RegnexeAgentBuilder:
         self._listener: AgentEventListener | None = None
         self._interrupt_on: dict[str, Any] | None = None
         self._system_prompt: str | None = None
-        self._session_buffer_size: int = 10
+        self._middleware: list[Any] = []
         self._model_provider = ModelProvider()
 
     # ------------------------------------------------------------------ model
@@ -70,10 +70,13 @@ class RegnexeAgentBuilder:
         self._marketplace = marketplace
         return self
 
-    def with_plugin(self, *instances: object) -> Self:
-        """Register one or more @plugin-decorated class instances."""
-        for inst in instances:
-            self._marketplace.install_instance(inst)
+    def with_plugin(self, *plugins: object) -> Self:
+        """Register PluginDescriptor objects or @plugin-decorated class instances."""
+        for plugin in plugins:
+            if isinstance(plugin, PluginDescriptor):
+                self._marketplace.install(plugin)
+            else:
+                self._marketplace.install_instance(plugin)
         return self
 
     def with_directory(self, path: str) -> Self:
@@ -135,18 +138,41 @@ class RegnexeAgentBuilder:
     # ------------------------------------------------------------------ session / persistence
 
     def with_checkpointer(self, checkpointer: Any) -> Self:
-        """Set the LangGraph checkpointer for within-session state (Layer 2)."""
+        """Set the LangGraph checkpointer for session memory.
+
+        Defaults to MemorySaver (in-process). Replace with a persistent
+        checkpointer (e.g. AsyncSqliteSaver, RedisSaver) to survive restarts.
+        All ainvoke() calls sharing the same session_id land on the same thread.
+        """
         self._checkpointer = checkpointer
         return self
 
     def with_store(self, store: Any) -> Self:
-        """Set the LangGraph BaseStore for cross-session task history (Layer 3)."""
+        """Set the LangGraph BaseStore passed through to create_deep_agent."""
         self._store = store
         return self
 
-    def with_session_buffer_size(self, size: int) -> Self:
-        """Max conversation turns kept verbatim before summarization kicks in."""
-        self._session_buffer_size = size
+    def with_middleware(self, *middleware: Any) -> Self:
+        """Append one or more deepagents middleware objects to the agent's stack.
+
+        Use this to customise context management, e.g. swap the default
+        SummarizationMiddleware for one tuned to your token budget::
+
+            from deepagents.middleware.summarization import SummarizationMiddleware
+            from deepagents.backends import StateBackend
+
+            summ = SummarizationMiddleware(
+                model=my_model,
+                backend=StateBackend(),
+                trigger=("tokens", 60_000),
+                keep=("messages", 10),
+            )
+            agent = RegnexeAgentBuilder()
+                .with_default_model(...)
+                .with_middleware(summ)
+                .build()
+        """
+        self._middleware.extend(middleware)
         return self
 
     # ------------------------------------------------------------------ observability / control
@@ -177,16 +203,13 @@ class RegnexeAgentBuilder:
             from langgraph.checkpoint.memory import MemorySaver
             checkpointer = MemorySaver()
 
-        task_store = TaskResultStore(store=self._store)
-
         return RegnexeAgent(
             model=self._model,
             marketplace=self._marketplace,
             checkpointer=checkpointer,
             store=self._store,
-            task_store=task_store,
             listener=self._listener,
             interrupt_on=self._interrupt_on,
             system_prompt=self._system_prompt,
-            session_buffer_size=self._session_buffer_size,
+            middleware=self._middleware,
         )

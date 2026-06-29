@@ -1,0 +1,85 @@
+# 能力市场换成数据库，对 Agent 架构意味着什么？
+
+> 「Regnexe Python 设计札记」第 6 篇（共 10 篇），对应仓库 [`examples/readme/06_marketplace.py`](https://github.com/flower-trees/regnexe-py/blob/master/examples/readme/06_marketplace.py)。上一篇：[05. Agent 能力一定要写进代码里吗？](https://github.com/flower-trees/regnexe-py/blob/master/docs/readme/zhihu/05-file-directory-loading.md)。
+
+## 这个问题为什么值得提前想清楚
+
+很多 Agent Demo 的能力列表都是启动时手写进去的：
+
+```python
+tools = [get_weather, search_docs, query_order]
+```
+
+这在 Demo 里没问题。但到了平台型应用，能力可能来自不同业务线、不同租户、不同环境。你迟早会问：能力到底应该存在代码里、数据库里，还是配置中心里？
+
+regnexe-py 的答案是：**Agent 不直接关心能力存在哪里，它只依赖 Marketplace 接口**。
+
+## Marketplace 先解决什么问题
+
+示例第一部分不跑 LLM，只演示市场的基本动作：安装、搜索、解析。
+
+```python
+marketplace = SimpleMarketplace()
+marketplace.install(weather_plugin)
+
+candidates = marketplace.search("Check today's weather in Beijing")
+resolved = marketplace.resolve("weather-plugin.get_weather")
+```
+
+当前版本的 `search()` 很简单，主要是能力索引入口。以后你要按标签、关键词、向量召回优化，也是在这一层做。
+
+## 换成自己的实现会怎样
+
+示例里写了一个 `InMemoryDbMarketplace`：
+
+```python
+class InMemoryDbMarketplace(SimpleMarketplace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.table: dict[str, PluginDescriptor] = {}
+
+    def install(self, plugin: PluginDescriptor) -> None:
+        self.table[plugin.plugin_id] = plugin
+        super().install(plugin)
+
+    def find_by_tag(self, tag: str) -> list[PluginDescriptor]:
+        return [
+            p for p in self.table.values()
+            if any(tag in cap.tags for cap in p.capabilities)
+        ]
+```
+
+真实项目里，`table` 可以换成 ORM、SQL 查询、配置中心或远程能力服务。
+
+## 关键是 Agent 主流程不变
+
+换市场时，Agent 侧只改这一行：
+
+```python
+agent = (
+    RegnexeAgentBuilder()
+    .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
+    .with_marketplace(marketplace)
+    .with_event_listener(ConsoleEventListener())
+    .build()
+)
+```
+
+这就是 Marketplace 的价值：能力管理怎么演进，不应该让 Agent 主流程跟着重写。
+
+## 这个设计到底解决了什么
+
+Marketplace 解决的是能力治理问题：
+
+- 能力统一安装和查询
+- 能力 id 稳定可解析
+- 能力来源可以从内存换成数据库
+- 自定义查询方法可以服务管理后台
+- Agent 构建逻辑不被存储细节污染
+
+一句话：**能力市场不是一个列表，而是 Agent 应用的能力索引层**。
+
+---
+
+上一篇：[05. Agent 能力一定要写进代码里吗？](https://github.com/flower-trees/regnexe-py/blob/master/docs/readme/zhihu/05-file-directory-loading.md) ｜ 下一篇：[07. Agent 的会话记忆，为什么不能只靠一个 history？](https://github.com/flower-trees/regnexe-py/blob/master/docs/readme/zhihu/07-three-layer-memory.md)  
+项目地址：https://github.com/flower-trees/regnexe-py

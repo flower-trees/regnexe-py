@@ -2,13 +2,13 @@
 
 Every loading channel in this README (with_tool, with_skill, with_subagent,
 with_plugin, with_directory) ultimately builds the same thing: a PluginDescriptor
-holding one or more CapabilityDescriptors, installed into a Marketplace. The most
-direct way to build one by hand is PluginDescriptor.builder(), which has tool(...),
-skill_config(...), and sub_agent_config(...) -- each wraps the raw tool/config dict
-into a CapabilityDescriptor automatically, id'd as "<plugin_id>.<name>". One call
-bundles a whole mixed-type plugin instead of hand-building each CapabilityDescriptor
-separately (mirrors regnexe-agent's PluginDescriptor.builder().tool().skillConfig()
-.subAgentConfig()).
+holding one or more CapabilityDescriptors. The most direct way to build one by hand
+is PluginDescriptor.builder(), which has tool(...), skill_config(...), and
+sub_agent_config(...) -- each wraps the raw tool/config dict into a
+CapabilityDescriptor automatically, id'd as "<plugin_id>.<name>". with_plugin(...)
+can register that descriptor directly, so one call bundles a whole mixed-type plugin
+instead of hand-building each CapabilityDescriptor separately (mirrors regnexe-agent's
+PluginDescriptor.builder().tool().skillConfig().subAgentConfig()).
 
 A Skill's "tools" list must reference the *fully-qualified* capability id. Since the
 tool and the skill share the plugin_id "trip-plugin" here, that id is
@@ -24,7 +24,6 @@ import asyncio
 from langchain_core.tools import tool
 
 from regnexe import ConsoleEventListener, RegnexeAgentBuilder, Vendor
-from regnexe.market.simple_marketplace import SimpleMarketplace
 from regnexe.plugin.descriptor import PluginDescriptor
 
 
@@ -75,13 +74,10 @@ async def main() -> None:
     for cap in trip_plugin.capabilities:
         print(f"{cap.capability_id:32s} -> {cap.type.value}")
 
-    marketplace = SimpleMarketplace()
-    marketplace.install(trip_plugin)
-
     agent = (
         RegnexeAgentBuilder()
         .with_default_model(Vendor.DEEPSEEK, "deepseek-v4-flash")
-        .with_marketplace(marketplace)       # installs the builder's PluginDescriptor directly
+        .with_plugin(trip_plugin)            # PluginDescriptor can be registered directly
         .with_event_listener(ConsoleEventListener())
         .build()
     )
